@@ -7,6 +7,11 @@
 ;   OUTFILE   where to write the installer
 ;   PUBLISHER (optional) the name shown as publisher in Windows' app list
 ;
+; Lookout updates itself by running a downloaded installer with
+;   /S /relaunch
+; and quitting: the installer then waits for it to close, and opens the new
+; version when done.
+;
 ; Installs for the current user only, so it never asks for administrator
 ; rights. Everything it writes lives under the install directory and HKCU,
 ; and the uninstaller removes exactly that. The user's accounts, cache and
@@ -54,7 +59,7 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 
 ; How long a copy of Lookout that is closing gets to let go of its file:
 ; tries, a quarter of a second apart.
-!define WAIT_TRIES 20
+!define WAIT_TRIES 60
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -120,6 +125,17 @@ Section "Install"
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" "$0"
 SectionEnd
+
+; The finish page opens Lookout after an install with pages; this does after
+; one Lookout started itself to update.
+Function .onInstSuccess
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/relaunch" $R1
+  ${IfNot} ${Errors}
+    Exec '"$INSTDIR\${EXE}"'
+  ${EndIf}
+FunctionEnd
 
 Section "Uninstall"
   ClearErrors

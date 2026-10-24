@@ -27,6 +27,8 @@ pub struct Config {
     pub favourites: Vec<String>,
     /// Markdown added to new messages and replies, by account id.
     pub signatures: std::collections::HashMap<String, String>,
+    /// Looks for a new version when Lookout starts and once a day.
+    pub check_for_updates: bool,
 }
 
 impl Default for Config {
@@ -40,6 +42,7 @@ impl Default for Config {
             collapsed: Vec::new(),
             favourites: Vec::new(),
             signatures: std::collections::HashMap::new(),
+            check_for_updates: true,
         }
     }
 }

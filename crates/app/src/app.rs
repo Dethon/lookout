@@ -10,13 +10,22 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::engine::{Engine, Event, Request};
 use crate::{AccountRow, MainWindow, Page, Shell as AppGlobal, Theme};
-use crate::{calendar_ui, mail_ui, people_ui};
+use crate::{calendar_ui, mail_ui, people_ui, update_ui};
 
 // How long a notice stays up.
 const TOAST_TIME: Duration = Duration::from_secs(6);
 
 thread_local! {
     static APP: RefCell<Weak<App>> = const { RefCell::new(Weak::new()) };
+}
+
+/// Runs `f` with the app, from a closure sent to the event loop.
+pub fn with_app(f: impl FnOnce(&Rc<App>)) {
+    APP.with(|app| {
+        if let Some(app) = app.borrow().upgrade() {
+            f(&app);
+        }
+    });
 }
 
 pub struct App {
@@ -29,6 +38,7 @@ pub struct App {
     pub mail: mail_ui::MailState,
     pub cal: calendar_ui::CalState,
     pub people: people_ui::PeopleState,
+    pub update: update_ui::UpdateState,
     next_token: Cell<u64>,
     toast_timer: Timer,
 }
@@ -53,6 +63,7 @@ impl App {
             mail: mail_ui::MailState::new(store.clone()),
             cal: calendar_ui::CalState::new(),
             people: people_ui::PeopleState::default(),
+            update: update_ui::UpdateState::default(),
             store,
             config: RefCell::new(config),
             accounts: RefCell::new(Vec::new()),
@@ -150,6 +161,7 @@ impl App {
         mail_ui::wire(self, ui);
         calendar_ui::wire(self, ui);
         people_ui::wire(self, ui);
+        update_ui::wire(self, ui);
     }
 
     fn add_account(&self) {
@@ -171,7 +183,7 @@ impl App {
         self.engine.send(Request::Configure(self.config.borrow().clone()));
     }
 
-    fn persist(&self) {
+    pub fn persist(&self) {
         if let Err(error) = self.config.borrow().save() {
             self.status(&format!("Couldn't save settings: {error}"));
         }

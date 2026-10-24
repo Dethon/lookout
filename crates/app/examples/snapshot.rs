@@ -4,7 +4,8 @@
 //!
 //! `SNAPSHOT_PAGE` picks `mail` (the default), `compose`, `calendar`,
 //! `month`, `people`, `welcome` or `settings`; `SNAPSHOT_DARK=1` uses the dark
-//! theme; `SNAPSHOT_CLICK=x,y` clicks there first.
+//! theme; `SNAPSHOT_CLICK=x,y` clicks there first; `SNAPSHOT_UPDATE=1` shows
+//! a new version ready to install.
 
 use std::rc::Rc;
 
@@ -66,6 +67,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if page == "settings" {
         shell.set_settings_open(true);
+    }
+    let update = ui.global::<AppUpdate>();
+    update.set_automatic(true);
+    update.set_status("Lookout is up to date.".into());
+    if std::env::var_os("SNAPSHOT_UPDATE").is_some() {
+        update.set_version("0.2.0".into());
+        update.set_ready(true);
+        update.set_banner(true);
+        update.set_status("Lookout 0.2.0 is ready to install.".into());
     }
 
     let icons = ui.global::<Icons>();

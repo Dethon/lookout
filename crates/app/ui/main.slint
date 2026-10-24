@@ -40,6 +40,25 @@ export global Shell {
     callback key(string, bool, bool) -> bool;
 }
 
+export global AppUpdate {
+    // The new version; empty while there is none.
+    in property <string> version;
+    // Its installer is downloaded, so it can be installed at once.
+    in property <bool> ready;
+    // The banner shows until it is closed.
+    in property <bool> banner;
+    // How the last check went, for Settings.
+    in property <string> status;
+    in property <bool> checking;
+    // Looks once a day by itself.
+    in property <bool> automatic;
+    callback install();
+    callback open-page();
+    callback dismiss();
+    callback check();
+    callback automatic-changed(bool);
+}
+
 export global Mail {
     in property <[FolderRow]> folders;
     in property <string> selected-account;
@@ -233,6 +252,53 @@ component Welcome inherits Rectangle {
     }
 }
 
+// Says a new version is out, above everything else.
+component UpdateBanner inherits Rectangle {
+    height: 40px;
+    background: Theme.selected;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        spacing: 8px;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            icon: Icons.refresh;
+            color: Theme.accent;
+        }
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: AppUpdate.ready ? "Lookout " + AppUpdate.version + " is ready to install." : "Lookout " + AppUpdate.version + " is available.";
+            color: Theme.text;
+            font-weight: 600;
+            overflow: elide;
+        }
+        if AppUpdate.ready: ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "What's new";
+            clicked => { AppUpdate.open-page(); }
+        }
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            primary: true;
+            label: AppUpdate.ready ? "Restart to update" : "Download";
+            clicked => {
+                if (AppUpdate.ready) {
+                    AppUpdate.install();
+                } else {
+                    AppUpdate.open-page();
+                }
+            }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: Icons.close;
+            tooltip: "Close";
+            clicked => { AppUpdate.dismiss(); }
+        }
+    }
+}
+
 component SettingsDialog inherits Overlay {
     card-width: 520px;
     dismissed => { Shell.settings-open = false; }
@@ -339,6 +405,55 @@ component SettingsDialog inherits Overlay {
             LineEdit {
                 text <=> Shell.client-id;
                 placeholder-text: "Lookout's own";
+            }
+        }
+        Divider { }
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: "Updates";
+                    color: Theme.text;
+                }
+                Text {
+                    text: AppUpdate.checking ? "Checking for updates…" : AppUpdate.status;
+                    color: Theme.text-muted;
+                    font-size: Theme.small;
+                    overflow: elide;
+                }
+            }
+            if AppUpdate.version != "": ToolButton {
+                y: (parent.height - self.height) / 2;
+                label: AppUpdate.ready ? "Restart to update" : "Download " + AppUpdate.version;
+                primary: true;
+                clicked => {
+                    if (AppUpdate.ready) {
+                        AppUpdate.install();
+                    } else {
+                        AppUpdate.open-page();
+                    }
+                }
+            }
+            ToolButton {
+                y: (parent.height - self.height) / 2;
+                label: "Check now";
+                enabled: !AppUpdate.checking;
+                clicked => { AppUpdate.check(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Check for updates automatically";
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Switch {
+                checked: AppUpdate.automatic;
+                toggled => { AppUpdate.automatic-changed(self.checked); }
             }
         }
         HorizontalLayout {
@@ -469,6 +584,7 @@ export component MainWindow inherits Window {
         }
 
         VerticalLayout {
+            if AppUpdate.banner && AppUpdate.version != "": UpdateBanner { }
             HorizontalLayout {
                 vertical-stretch: 1;
                 // Navigation rail.

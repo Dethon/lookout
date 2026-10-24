@@ -40,6 +40,11 @@ signing in), against the hundreds the new Outlook takes.
 - **People**: contacts across accounts, search, create, edit, delete, mail
   a contact.
 - Light and dark themes; keyboard shortcuts.
+- **Updates**: Lookout looks for a new release when it starts and once a
+  day (Settings can turn that off). Installed with the Windows installer,
+  it downloads the new one ahead, checks it against the release's
+  checksums, and installs it when you click *Restart to update*; otherwise
+  it links to the release.
 
 ### Shortcuts
 
@@ -64,7 +69,7 @@ Compared with Outlook: true WYSIWYG composing (formatting is written as
 markdown, with a preview), conversation view, Focused Inbox, rules, categories (shown, not edited),
 shared and delegated mailboxes and calendars, editing a whole recurring
 series (single occurrences can be edited), scheduling assistant, offline
-sending queue, Windows toast notifications, and automatic updates.
+sending queue, and Windows toast notifications.
 
 ## Install
 
@@ -78,6 +83,8 @@ Download from [Releases](https://github.com/Dethon/lookout/releases):
 - **Debian, Ubuntu**: `sudo apt install ./lookout_<version>_amd64.deb`.
 - **Other Linux**: unpack `lookout-<version>-linux-x64.tar.gz` and run
   `./install.sh`, which installs to `~/.local`.
+
+Lookout updates itself from then on; see *Updates* above.
 
 Uninstalling keeps your accounts, cache and settings (see *Build* for
 where), so a reinstall picks up where you left off.

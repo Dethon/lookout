@@ -11,6 +11,8 @@ mod mail_ui;
 mod models;
 mod notify;
 mod people_ui;
+mod update_ui;
+mod updater;
 mod viewer;
 
 slint::include_modules!();

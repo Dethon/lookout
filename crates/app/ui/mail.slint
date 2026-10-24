@@ -262,6 +262,98 @@ export component MessageList inherits Rectangle {
                             }
                         }
                         clicked => { root.row-clicked(index); }
+                        // Inside, so the row keeps its hover over the quick actions.
+                        VerticalLayout {
+                            padding-left: 14px;
+                            padding-right: 16px;
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            spacing: 2px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                if message.draft: Text {
+                                    text: "[Draft]";
+                                    color: Theme.danger;
+                                    font-size: Theme.font-size;
+                                }
+                                Text {
+                                    text: message.sender;
+                                    color: Theme.text;
+                                    font-size: Theme.font-size;
+                                    font-weight: message.unread ? 700 : 400;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                // Quick actions on hover, the date otherwise.
+                                if touch.has-hover: HorizontalLayout {
+                                    spacing: 0px;
+                                    IconButton {
+                                        icon: message.unread ? Icons.mail-open : Icons.mail;
+                                        tooltip: message.unread ? "Mark as read" : "Mark as unread";
+                                        size: 22px;
+                                        icon-size: 15px;
+                                        clicked => { root.toggle-read(index); }
+                                    }
+                                    IconButton {
+                                        icon: Icons.archive;
+                                        tooltip: "Archive";
+                                        size: 22px;
+                                        icon-size: 15px;
+                                        clicked => { root.archive-at(index); }
+                                    }
+                                    IconButton {
+                                        icon: Icons.delete;
+                                        tooltip: "Delete (Del)";
+                                        size: 22px;
+                                        icon-size: 15px;
+                                        clicked => { root.delete-at(index); }
+                                    }
+                                }
+                                if !touch.has-hover: Text {
+                                    text: message.date;
+                                    color: message.unread ? Theme.accent : Theme.text-muted;
+                                    font-size: Theme.small;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                if message.important: Icon {
+                                    icon: Icons.important;
+                                    color: Theme.danger;
+                                    width: 12px;
+                                    height: 14px;
+                                }
+                                Text {
+                                    text: message.subject == "" ? "(no subject)" : message.subject;
+                                    color: message.unread ? Theme.accent : Theme.text;
+                                    font-size: Theme.font-size;
+                                    font-weight: message.unread ? 600 : 400;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                if message.attachment: Icon {
+                                    icon: Icons.attach;
+                                    width: 14px;
+                                    height: 14px;
+                                }
+                                IconButton {
+                                    icon: message.flagged ? Icons.flag : message.completed ? Icons.check : Icons.flag-outline;
+                                    tooltip: message.flagged ? "Clear flag" : "Flag";
+                                    tint: message.flagged ? Theme.flag : Theme.text-faint;
+                                    size: 18px;
+                                    icon-size: 14px;
+                                    opacity: message.flagged || message.completed || touch.has-hover ? 1 : 0;
+                                    clicked => { root.toggle-flag(index); }
+                                }
+                            }
+                            Text {
+                                text: message.preview;
+                                color: Theme.text-muted;
+                                font-size: Theme.small + 1px;
+                                overflow: elide;
+                            }
+                        }
                     }
                 }
                 ContextMenuArea {
@@ -286,97 +378,6 @@ export component MessageList inherits Rectangle {
                             title: "Delete";
                             activated => { root.delete-at(index); }
                         }
-                    }
-                }
-                VerticalLayout {
-                    padding-left: 14px;
-                    padding-right: 16px;
-                    padding-top: 8px;
-                    padding-bottom: 8px;
-                    spacing: 2px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        if message.draft: Text {
-                            text: "[Draft]";
-                            color: Theme.danger;
-                            font-size: Theme.font-size;
-                        }
-                        Text {
-                            text: message.sender;
-                            color: Theme.text;
-                            font-size: Theme.font-size;
-                            font-weight: message.unread ? 700 : 400;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                        }
-                        // Quick actions on hover, the date otherwise.
-                        if touch.has-hover: HorizontalLayout {
-                            spacing: 0px;
-                            IconButton {
-                                icon: message.unread ? Icons.mail-open : Icons.mail;
-                                tooltip: message.unread ? "Mark as read" : "Mark as unread";
-                                size: 22px;
-                                icon-size: 15px;
-                                clicked => { root.toggle-read(index); }
-                            }
-                            IconButton {
-                                icon: Icons.archive;
-                                tooltip: "Archive";
-                                size: 22px;
-                                icon-size: 15px;
-                                clicked => { root.archive-at(index); }
-                            }
-                            IconButton {
-                                icon: Icons.delete;
-                                tooltip: "Delete (Del)";
-                                size: 22px;
-                                icon-size: 15px;
-                                clicked => { root.delete-at(index); }
-                            }
-                        }
-                        if !touch.has-hover: Text {
-                            text: message.date;
-                            color: message.unread ? Theme.accent : Theme.text-muted;
-                            font-size: Theme.small;
-                            vertical-alignment: center;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        if message.important: Icon {
-                            icon: Icons.important;
-                            color: Theme.danger;
-                            width: 12px;
-                            height: 14px;
-                        }
-                        Text {
-                            text: message.subject == "" ? "(no subject)" : message.subject;
-                            color: message.unread ? Theme.accent : Theme.text;
-                            font-size: Theme.font-size;
-                            font-weight: message.unread ? 600 : 400;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                        }
-                        if message.attachment: Icon {
-                            icon: Icons.attach;
-                            width: 14px;
-                            height: 14px;
-                        }
-                        IconButton {
-                            icon: message.flagged ? Icons.flag : message.completed ? Icons.check : Icons.flag-outline;
-                            tooltip: message.flagged ? "Clear flag" : "Flag";
-                            tint: message.flagged ? Theme.flag : Theme.text-faint;
-                            size: 18px;
-                            icon-size: 14px;
-                            opacity: message.flagged || message.completed || touch.has-hover ? 1 : 0;
-                            clicked => { root.toggle-flag(index); }
-                        }
-                    }
-                    Text {
-                        text: message.preview;
-                        color: Theme.text-muted;
-                        font-size: Theme.small + 1px;
-                        overflow: elide;
                     }
                 }
                 Divider {

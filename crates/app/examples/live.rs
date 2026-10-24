@@ -8,7 +8,7 @@
 //! Steps: `size:W,H`, `scale:F`, `wait:MS` (lets the engine work), `shot:NAME`,
 //! `page:mail|calendar|people`, `folder:NAME` (first folder with that name), `fav:NAME`, `collapse:NAME`,
 //! `select:N` (message), `ctrl-select:N`, `shift-select:N`, `person:N`, `key:NAME[+ctrl][+shift]`, `click:X,Y`, `drag:X1,Y1,X2,Y2`,
-//! `search:TEXT`, `hover:X,Y`, `mode:N` (calendar view), `next`, `previous`, `dark`.
+//! `search:TEXT`, `hover:X,Y`, `wheel:X,Y,DY`, `mode:N` (calendar view), `next`, `previous`, `dark`.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -190,6 +190,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let position = LogicalPosition::new(x.parse()?, y.parse()?);
                 ui.window().dispatch_event(WindowEvent::PointerMoved { position });
                 pump(&queue, Duration::from_millis(800));
+            }
+            "wheel" => {
+                let points: Vec<f32> = value.split(',').map(str::parse).collect::<Result<_, _>>()?;
+                let [x, y, delta_y] = points[..] else { return Err("wheel:X,Y,DY".into()) };
+                let position = LogicalPosition::new(x, y);
+                ui.window().dispatch_event(WindowEvent::PointerMoved { position });
+                ui.window().dispatch_event(WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y });
+                pump(&queue, Duration::from_millis(300));
             }
             "drag" => {
                 let points: Vec<f32> = value.split(',').map(str::parse).collect::<Result<_, _>>()?;

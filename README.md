@@ -28,11 +28,15 @@ signing in), against the hundreds the new Outlook takes.
   size, importance and address completion; drafts; instant offline search
   (SQLite FTS5) and server search for older mail; unread-only filter; new
   mail notices.
-- **Original view**: the *Original* switch shows messages exactly as sent,
-  in WebView2 inside the reading pane. It is only created while the switch
-  is on, and closed (its memory given back) when it is turned off. Scripts
-  are blocked; remote pictures, styles and fonts follow the message's
-  setting. Elsewhere than Windows it opens the message in the browser.
+- **Original view**: messages are shown as sent, laid out and painted by
+  [Blitz](https://github.com/DioxusLabs/blitz) inside the reading pane:
+  about 15-25 MB more than the simplified view, against some 220 MB for
+  WebView2. Only the part in view is painted. Scripts never run; remote
+  pictures, styles and fonts follow the message's setting. The *Original*
+  switch turns it off for the simplified, theme-coloured view, which is
+  also used should Blitz fail on a message. To compare with a browser,
+  `"webview": true` in `config.json` shows the original in WebView2
+  instead, on Windows.
 - **Calendar**: day, work week, week and month views across calendars and
   accounts, with overlap layout and all-day strip; create, edit, delete and
   cancel events; attendees, location, Teams meetings, show-as, reminders;

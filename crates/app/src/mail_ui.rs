@@ -63,6 +63,10 @@ pub struct MailState {
     search_timer: Timer,
     search_token: Cell<u64>,
     original: OriginalState,
+    /// The open message as sent, drawn by Blitz.
+    page: RefCell<Option<crate::page::Page>>,
+    /// The pane's view of the page: width, height, and scroll.
+    page_view: Cell<(f32, f32, f32, f32)>,
 }
 
 /// The reading pane's WebView2 mode.
@@ -104,6 +108,8 @@ impl MailState {
             search_timer: Timer::default(),
             search_token: Cell::new(0),
             original: OriginalState::default(),
+            page: RefCell::new(None),
+            page_view: Cell::new((0.0, 0.0, 0.0, 0.0)),
         }
     }
 }
@@ -178,13 +184,31 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     mail.on_edit_draft(with_app!(app, |app| edit_draft(&app)));
     mail.on_show_images(with_app!(app, |app| {
         app.mail.remote_shown.set(true);
-        request_pictures(&app, true);
-        if app.config.borrow().original_view {
+        if app.mail.page.borrow().is_some() {
+            open_page(&app, true);
+        } else {
+            request_pictures(&app, true);
+        }
+        if app.config.borrow().original_view && webview(&app) {
             request_original(&app);
         }
         update_reader(&app, |reader| reader.images_shown = true);
     }));
     mail.set_original(app.config.borrow().original_view);
+    mail.set_webview(webview(app));
+    mail.on_page_view(with_app!(app, |app, width, height, x, y| {
+        app.mail.page_view.set((width, height, x, y));
+        paint_page(&app);
+    }));
+    mail.on_page_clicked(with_app!(app, |app, x, y| {
+        if let Some(link) = page_link(&app, x, y) {
+            open_link(&app, &link);
+        }
+    }));
+    mail.on_page_over_link({
+        let weak = Rc::downgrade(app);
+        move |x, y| weak.upgrade().is_some_and(|app| page_link(&app, x, y).is_some())
+    });
     mail.on_toggle_original(with_app!(app, |app| toggle_original(&app)));
     mail.on_original_area(with_app!(app, |app, x, y, width, height| {
         app.mail.original.area.set((x, y, width, height));
@@ -645,6 +669,7 @@ fn show_header(app: &App, summary: &MessageSummary) {
     app.mail.remote_shown.set(app.config.borrow().load_remote_images);
     *app.mail.detail.borrow_mut() = None;
     *app.mail.original.page.borrow_mut() = None;
+    close_page(app);
     mail.set_attachments(ModelRc::default());
     mail.set_select_text(false);
     mail.set_reader(Reader {
@@ -675,6 +700,7 @@ fn close_reader(app: &App) {
     app.mail.blocks.set_vec(Vec::new());
     app.mail.picture_blocks.borrow_mut().clear();
     *app.mail.detail.borrow_mut() = None;
+    close_page(app);
     ui.global::<Mail>().set_reader(Reader::default());
     ui.global::<Mail>().set_attachments(ModelRc::default());
 }
@@ -732,9 +758,12 @@ pub fn opened(app: &Rc<App>, token: u64, detail: Option<MessageDetail>) {
     let account = detail.summary.account.clone();
     let id = detail.summary.id.clone();
     *app.mail.detail.borrow_mut() = Some(detail);
-    request_pictures(app, app.mail.remote_shown.get());
-    if app.config.borrow().original_view {
+    let original = app.config.borrow().original_view;
+    if original && webview(app) {
         request_original(app);
+    }
+    if !(original && !webview(app) && open_page(app, false)) {
+        request_pictures(app, app.mail.remote_shown.get());
     }
     if unread {
         app.engine.send(Request::SetRead { account, id, read: true });
@@ -1213,16 +1242,11 @@ fn attachment(app: &Rc<App>, id: &str, open: bool) {
     });
 }
 
-/// Switches the reading pane between native drawing and WebView2. Off,
-/// WebView2 is closed and its memory given back. Without WebView2 (not
-/// Windows) the message opens in the browser instead.
+/// Switches the reading pane between the message as sent and simplified.
+/// As sent is drawn by Blitz, or WebView2 when comparing the two; off,
+/// either is closed and its memory given back.
 fn toggle_original(app: &Rc<App>) {
     let on = !app.config.borrow().original_view;
-    #[cfg(not(windows))]
-    if on {
-        request_original(app);
-        return;
-    }
     app.config.borrow_mut().original_view = on;
     if let Err(error) = app.config.borrow().save() {
         log::warn!("saving settings: {error}");
@@ -1230,13 +1254,142 @@ fn toggle_original(app: &Rc<App>) {
     if let Some(ui) = app.ui() {
         ui.global::<Mail>().set_original(on);
     }
-    if on {
-        request_original(app);
+    if webview(app) {
+        if on {
+            request_original(app);
+        } else {
+            *app.mail.original.loaded.borrow_mut() = None;
+            #[cfg(windows)]
+            app.mail.original.panel.borrow_mut().take();
+        }
+    } else if on {
+        if open_page(app, false) {
+            // The simplified view's pictures aren't needed meanwhile.
+            for block in 0..app.mail.blocks.row_count() {
+                if let Some(mut block_data) = app.mail.blocks.row_data(block)
+                    && block_data.kind == 3
+                {
+                    let pictures: Vec<crate::Picture> = block_data
+                        .pictures
+                        .iter()
+                        .map(|picture| crate::Picture { image: slint::Image::default(), loaded: false, ..picture })
+                        .collect();
+                    body::set_pictures(&mut block_data, pictures);
+                    app.mail.blocks.set_row_data(block, block_data);
+                }
+            }
+        }
     } else {
-        *app.mail.original.loaded.borrow_mut() = None;
-        #[cfg(windows)]
-        app.mail.original.panel.borrow_mut().take();
+        close_page(app);
+        request_pictures(app, app.mail.remote_shown.get());
     }
+}
+
+/// WebView2 shows messages as sent instead of Blitz, to compare them.
+fn webview(app: &App) -> bool {
+    cfg!(windows) && app.config.borrow().webview
+}
+
+/// Draws the open message as sent with Blitz. False if it can't be, and the
+/// simplified view should show instead.
+fn open_page(app: &Rc<App>, keep_scroll: bool) -> bool {
+    let Some(ui) = app.ui() else { return false };
+    let Some(html) = app.mail.detail.borrow().as_ref().and_then(|detail| detail.body_html.clone()) else {
+        close_page(app);
+        return false;
+    };
+    let Some((account, id)) = app.mail.selected.borrow().clone() else { return false };
+    let resources = crate::page::Resources::new(app.engine.clone(), account, id, app.mail.remote_shown.get(), || {
+        _ = slint::invoke_from_event_loop(|| crate::app::with_app(paint_page_loaded));
+    });
+    let Some(page) = crate::page::guard("reading a message", || crate::page::Page::new(&html, resources)) else {
+        close_page(app);
+        return false;
+    };
+    *app.mail.page.borrow_mut() = Some(page);
+    let mail = ui.global::<Mail>();
+    if !keep_scroll {
+        let (width, height, _, _) = app.mail.page_view.get();
+        app.mail.page_view.set((width, height, 0.0, 0.0));
+        mail.set_page_width(0.0);
+        mail.set_page_height(0.0);
+    }
+    mail.set_page(true);
+    // A view already up paints the new page now; a new one asks when it
+    // knows its size.
+    paint_page(app);
+    true
+}
+
+fn close_page(app: &App) {
+    app.mail.page.borrow_mut().take();
+    if let Some(ui) = app.ui() {
+        let mail = ui.global::<Mail>();
+        mail.set_page(false);
+        mail.set_page_picture(slint::Image::default());
+    }
+}
+
+/// Lays the page out for the pane and paints what is in view.
+fn paint_page(app: &Rc<App>) {
+    let Some(ui) = app.ui() else { return };
+    let (width, height, x, y) = app.mail.page_view.get();
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let scale = ui.window().scale_factor();
+    let painted = {
+        let mut page = app.mail.page.borrow_mut();
+        let Some(page) = page.as_mut() else { return };
+        crate::page::guard("drawing a message", || {
+            page.view(width, height, scale);
+            (page.size(), page.paint(x, y))
+        })
+    };
+    show_painted(app, painted);
+}
+
+/// Takes in what has arrived for the page, and paints it again.
+fn paint_page_loaded(app: &Rc<App>) {
+    let (width, height, x, y) = app.mail.page_view.get();
+    let painted = {
+        let mut page = app.mail.page.borrow_mut();
+        let Some(page) = page.as_mut() else { return };
+        crate::page::guard("loading a message's pictures", || {
+            page.load();
+            (width > 0.0 && height > 0.0).then(|| (page.size(), page.paint(x, y)))
+        })
+    };
+    match painted {
+        Some(None) => {}
+        Some(Some(painted)) => show_painted(app, Some(painted)),
+        None => show_painted(app, None),
+    }
+}
+
+/// Shows a painted page, or the simplified view if Blitz failed.
+fn show_painted(app: &Rc<App>, painted: Option<((f32, f32), slint::Image)>) {
+    let Some(ui) = app.ui() else { return };
+    let mail = ui.global::<Mail>();
+    match painted {
+        Some(((width, height), picture)) => {
+            mail.set_page_width(width);
+            mail.set_page_height(height);
+            mail.set_page_picture(picture);
+        }
+        None => {
+            drop(ui);
+            close_page(app);
+            app.status("This message can't be shown as sent, so it is simplified.");
+            request_pictures(app, app.mail.remote_shown.get());
+        }
+    }
+}
+
+fn page_link(app: &App, x: f32, y: f32) -> Option<String> {
+    let page = app.mail.page.borrow();
+    let page = page.as_ref()?;
+    crate::page::guard("finding a link", || page.link_at(x, y)).flatten()
 }
 
 fn request_original(app: &App) {

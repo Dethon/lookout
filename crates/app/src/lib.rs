@@ -10,6 +10,7 @@ mod logging;
 mod mail_ui;
 mod models;
 mod notify;
+mod page;
 mod people_ui;
 mod update_ui;
 mod updater;

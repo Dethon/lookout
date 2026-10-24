@@ -1,6 +1,7 @@
-//! A message as it was sent, for when the native rendering falls short.
+//! A message as it was sent, in WebView2, to compare with Blitz's drawing
+//! (see `page.rs`); only with `webview` set in the settings.
 //!
-//! On Windows the reading pane can switch to WebView2, embedded in the main
+//! On Windows the reading pane switches to WebView2, embedded in the main
 //! window. It is only created while the switch is on, and closed when it is
 //! turned off, so its memory is given back. Elsewhere the message opens in
 //! the default browser. Scripts never run; pictures, style sheets and fonts

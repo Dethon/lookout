@@ -18,8 +18,11 @@ pub struct Config {
     /// Loads pictures from the internet in messages without asking.
     pub load_remote_images: bool,
     pub dark: bool,
-    /// Messages are shown as sent, in WebView2, rather than drawn natively.
+    /// Messages are shown as sent, drawn by Blitz, rather than simplified.
     pub original_view: bool,
+    /// On Windows, messages shown as sent go to WebView2 instead of Blitz,
+    /// to compare the two. Only in `config.json`.
+    pub webview: bool,
     /// Folders whose subfolders are hidden, and accounts whose folders are,
     /// as `account/folder` and `account/`.
     pub collapsed: Vec<String>,
@@ -38,7 +41,8 @@ impl Default for Config {
             poll_seconds: DEFAULT_POLL_SECONDS,
             load_remote_images: false,
             dark: false,
-            original_view: false,
+            original_view: true,
+            webview: false,
             collapsed: Vec::new(),
             favourites: Vec::new(),
             signatures: std::collections::HashMap::new(),

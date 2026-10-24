@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use lookout_core::calendar::{Answer, EventDraft};
 use lookout_core::mail::{Draft, ReplyKind};
-use lookout_core::model::{Contact, Flag, MessageDetail, MessageSummary, wire};
+use lookout_core::model::{Attachment, Contact, Flag, MessageDetail, MessageSummary, wire};
 use lookout_core::{Account, Config, Error, Graph, Session, Store, auth, calendar, graph, mail, people, sync};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -23,6 +23,10 @@ const CALENDAR_AFTER: i64 = 365 * 86400;
 // shrunk on screen while taking memory.
 const MAX_PICTURE_WIDTH: u32 = 900;
 const MAX_PICTURE_HEIGHT: u32 = 3000;
+// The same for messages drawn by Blitz, which keeps pictures decoded at
+// their own size: room for a wide pane on a high-resolution screen.
+const MAX_PAGE_PICTURE_WIDTH: u32 = 1800;
+const MAX_PAGE_PICTURE_HEIGHT: u32 = 3600;
 // Folders kept up to date even when not open.
 const ALWAYS_WATCHED: &[&str] = &["inbox", "drafts", "sentitems"];
 
@@ -44,6 +48,9 @@ pub enum Request {
     SaveDraft { account: String, draft: Draft },
     Attachment { account: String, message: String, attachment: String, name: String, open: bool },
     Pictures { account: String, message: String, token: u64, sources: Vec<String>, remote: bool },
+    /// A picture, style sheet or font of a message drawn by Blitz; `reply`
+    /// gets its bytes, or `None` when it can't or mustn't be loaded.
+    Resource { account: String, message: String, url: String, remote: bool, reply: Box<dyn FnOnce(Option<Vec<u8>>) + Send> },
     /// Writes the message as it was sent to a page; see `viewer.rs`.
     PrepareOriginal { account: String, id: String, remote: bool, token: u64 },
     SearchServer { query: String, token: u64 },
@@ -128,6 +135,12 @@ impl Engine {
 
     pub fn send(&self, request: Request) {
         _ = self.requests.send(request);
+    }
+
+    /// An engine that drops every request.
+    #[cfg(test)]
+    pub fn idle() -> Self {
+        Self { requests: unbounded_channel().0 }
     }
 }
 
@@ -513,6 +526,15 @@ impl Inner {
                     self.emit(Event::Pictures { token, pictures });
                 }
             }
+            Request::Resource { account, message, url, remote, reply } => {
+                let Some(graph) = self.graph(&account) else { return reply(None) };
+                let attachments = self.attachments(&graph, &message);
+                let bytes = match self.resource(&graph, &message, &attachments, &url, remote).await {
+                    Some(bytes) => tokio::task::spawn_blocking(move || shrink_picture(bytes)).await.ok(),
+                    None => None,
+                };
+                reply(bytes);
+            }
             Request::PrepareOriginal { account, id, remote, token } => {
                 let Some(graph) = self.graph(&account) else { return };
                 match self.prepare_original(&graph, &id, remote).await {
@@ -708,47 +730,60 @@ impl Inner {
         sources: &[String],
         remote: bool,
     ) -> Vec<(String, SharedPixelBuffer<Rgba8Pixel>)> {
-        let attachments = self
-            .store
-            .lock()
-            .unwrap()
-            .message(graph.account_id(), message)
-            .ok()
-            .flatten()
-            .map(|detail| detail.attachments)
-            .unwrap_or_default();
+        let attachments = self.attachments(graph, message);
         let mut pictures = Vec::new();
         for source in sources {
-            let lower = source.to_ascii_lowercase();
-            let bytes = if let Some(content_id) = lower.strip_prefix("cid:") {
-                let content_id = content_id.trim_matches(['<', '>']);
-                let Some(attachment) = attachments.iter().find(|attachment| {
-                    attachment.content_id.as_deref().is_some_and(|id| id.trim_matches(['<', '>']).eq_ignore_ascii_case(content_id))
-                        || attachment.name.eq_ignore_ascii_case(content_id)
-                }) else {
-                    continue;
-                };
-                mail::attachment_bytes(graph, message, &attachment.id).await.ok()
-            } else if lower.starts_with("data:") {
-                source.split_once(";base64,").and_then(|(_, data)| {
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
-                })
-            } else if remote && (lower.starts_with("https://") || lower.starts_with("http://")) {
-                match self.http.get(source).send().await {
-                    Ok(response) if response.status().is_success() => response.bytes().await.ok().map(|b| b.to_vec()),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let Some(bytes) = bytes else { continue };
+            let Some(bytes) = self.resource(graph, message, &attachments, source, remote).await else { continue };
             let decoded = tokio::task::spawn_blocking(move || decode_picture(&bytes)).await.ok().flatten();
             if let Some(buffer) = decoded {
                 pictures.push((source.clone(), buffer));
             }
         }
         pictures
+    }
+
+    fn attachments(&self, graph: &Graph, message: &str) -> Vec<Attachment> {
+        self.store
+            .lock()
+            .unwrap()
+            .message(graph.account_id(), message)
+            .ok()
+            .flatten()
+            .map(|detail| detail.attachments)
+            .unwrap_or_default()
+    }
+
+    /// The bytes `source` points at in a message: an inline attachment
+    /// (`cid:`), data in the address, or, if `remote`, a download.
+    async fn resource(
+        &self,
+        graph: &Graph,
+        message: &str,
+        attachments: &[Attachment],
+        source: &str,
+        remote: bool,
+    ) -> Option<Vec<u8>> {
+        let lower = source.to_ascii_lowercase();
+        if let Some(content_id) = lower.strip_prefix("cid:") {
+            let content_id = content_id.trim_matches(['<', '>']);
+            let attachment = attachments.iter().find(|attachment| {
+                attachment.content_id.as_deref().is_some_and(|id| id.trim_matches(['<', '>']).eq_ignore_ascii_case(content_id))
+                    || attachment.name.eq_ignore_ascii_case(content_id)
+            })?;
+            mail::attachment_bytes(graph, message, &attachment.id).await.ok()
+        } else if lower.starts_with("data:") {
+            source.split_once(";base64,").and_then(|(_, data)| {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
+            })
+        } else if remote && (lower.starts_with("https://") || lower.starts_with("http://")) {
+            match self.http.get(source).send().await {
+                Ok(response) if response.status().is_success() => response.bytes().await.ok().map(|b| b.to_vec()),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -762,6 +797,33 @@ fn decode_picture(bytes: &[u8]) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     };
     let rgba = image.into_rgba8();
     Some(SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
+
+/// A picture larger than a message drawn by Blitz could show, made smaller;
+/// anything else (style sheets, fonts, drawings) as it is.
+fn shrink_picture(bytes: Vec<u8>) -> Vec<u8> {
+    use std::io::Cursor;
+    let Ok(reader) = image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format() else { return bytes };
+    if reader.format().is_none() {
+        return bytes;
+    }
+    match reader.into_dimensions() {
+        Ok((width, height)) if width > MAX_PAGE_PICTURE_WIDTH || height > MAX_PAGE_PICTURE_HEIGHT => {}
+        _ => return bytes,
+    }
+    let Ok(image) = image::load_from_memory(&bytes) else { return bytes };
+    let image = image.resize(MAX_PAGE_PICTURE_WIDTH, MAX_PAGE_PICTURE_HEIGHT, image::imageops::FilterType::Triangle);
+    let mut out = Cursor::new(Vec::new());
+    // Photos stay small as JPEG; PNG keeps transparency.
+    let written = if image.color().has_alpha() {
+        image.write_to(&mut out, image::ImageFormat::Png)
+    } else {
+        image.into_rgb8().write_to(&mut out, image::ImageFormat::Jpeg)
+    };
+    match written {
+        Ok(()) => out.into_inner(),
+        Err(_) => bytes,
+    }
 }
 
 /// Writes an attachment to Downloads, or to a temporary folder when it is
@@ -790,4 +852,25 @@ fn save_download(name: &str, bytes: &[u8], temporary: bool) -> std::io::Result<P
     }
     std::fs::write(&path, bytes)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn only_large_pictures_shrink() {
+        let small = png(400, 300);
+        assert_eq!(shrink_picture(small.clone()), small);
+        let css = b"body { color: red }".to_vec();
+        assert_eq!(shrink_picture(css.clone()), css);
+        let shrunk = image::load_from_memory(&shrink_picture(png(4000, 3000))).unwrap();
+        assert_eq!((shrunk.width(), shrunk.height()), (MAX_PAGE_PICTURE_WIDTH, 1350));
+    }
 }

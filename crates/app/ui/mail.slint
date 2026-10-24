@@ -390,6 +390,47 @@ export component MessageList inherits Rectangle {
     }
 }
 
+// The message as sent: Blitz paints what is in view into `picture`.
+export component PageView inherits Rectangle {
+    in property <image> picture;
+    in property <length> page-width;
+    in property <length> page-height;
+    // The size in view, and how far the page is scrolled.
+    callback view(length, length, length, length);
+    callback clicked(length, length);
+    pure callback over-link(length, length) -> bool;
+    // Messages bring their own colours, made for a white page.
+    background: white;
+    function report() {
+        root.view(scroll.visible-width, scroll.visible-height, -scroll.content-x, -scroll.content-y);
+    }
+    init => { root.report(); }
+    scroll := ScrollView {
+        width: 100%;
+        height: 100%;
+        content-width: max(root.page-width, self.visible-width);
+        content-height: max(root.page-height, self.visible-height);
+        changed visible-width => { root.report(); }
+        changed visible-height => { root.report(); }
+        changed content-x => { root.report(); }
+        changed content-y => { root.report(); }
+        Image {
+            x: -scroll.content-x;
+            y: -scroll.content-y;
+            width: scroll.visible-width;
+            height: scroll.visible-height;
+            source: root.picture;
+            image-fit: fill;
+        }
+        TouchArea {
+            width: scroll.content-width;
+            height: scroll.content-height;
+            mouse-cursor: self.has-hover && root.over-link(self.mouse-x, self.mouse-y) ? pointer : default;
+            clicked => { root.clicked(self.pressed-x, self.pressed-y); }
+        }
+    }
+}
+
 // The message body: paragraphs, headings, rules and pictures.
 export component BodyView inherits Rectangle {
     in property <[BodyBlock]> blocks;
@@ -490,9 +531,18 @@ export component ReadingPane inherits Rectangle {
     callback toggle-flag();
     callback toggle-read();
     callback show-images();
-    // The body as sent, in WebView2, instead of drawn natively.
+    // The body as sent instead of simplified: drawn by Blitz into a
+    // picture (`page`), or in WebView2 (`webview`).
     in property <bool> original;
     callback toggle-original();
+    in property <bool> page;
+    in property <image> page-picture;
+    in property <length> page-width;
+    in property <length> page-height;
+    callback page-view(length, length, length, length);
+    callback page-clicked(length, length);
+    pure callback page-over-link(length, length) -> bool;
+    in property <bool> webview;
     // Where the WebView2 panel goes, in window coordinates.
     callback original-area(length, length, length, length);
     callback toggle-select-text();
@@ -583,7 +633,7 @@ export component ReadingPane inherits Rectangle {
                 label: "Forward";
                 clicked => { root.forward(); }
             }
-            // The message as sent, in WebView2 (the browser elsewhere).
+            // The message as sent, or simplified to suit the theme.
             ToolButton {
                 icon: Icons.open-external;
                 label: "Original";
@@ -786,7 +836,16 @@ export component ReadingPane inherits Rectangle {
                 indeterminate: true;
             }
         }
-        if root.original && !root.select-text: web-area := Rectangle {
+        if root.original && root.page && !root.select-text: PageView {
+            vertical-stretch: 1;
+            picture: root.page-picture;
+            page-width: root.page-width;
+            page-height: root.page-height;
+            view(width, height, x, y) => { root.page-view(width, height, x, y); }
+            clicked(x, y) => { root.page-clicked(x, y); }
+            over-link(x, y) => { return root.page-over-link(x, y); }
+        }
+        if root.original && root.webview && !root.select-text: web-area := Rectangle {
             vertical-stretch: 1;
             background: Theme.surface;
             Text {
@@ -801,7 +860,7 @@ export component ReadingPane inherits Rectangle {
             changed width => { root.original-area(self.left, self.top, self.width, self.height); }
             changed height => { root.original-area(self.left, self.top, self.width, self.height); }
         }
-        if !root.reader.loading && !root.select-text && !root.original: BodyView {
+        if !root.reader.loading && !root.select-text && !(root.original && (root.page || root.webview)): BodyView {
             blocks: root.blocks;
             vertical-stretch: 1;
             link-clicked(link) => { root.link-clicked(link); }
@@ -812,7 +871,7 @@ export component ReadingPane inherits Rectangle {
             wrap: word-wrap;
             vertical-stretch: 1;
         }
-        if root.reader.truncated: Text {
+        if root.reader.truncated && !(root.original && root.page): Text {
             text: "This message is long; open the original to see all of it.";
             color: Theme.text-muted;
             horizontal-alignment: center;

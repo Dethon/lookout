@@ -112,6 +112,17 @@ export global Mail {
     callback show-images();
     in-out property <bool> original;
     callback toggle-original();
+    // The open message as sent, drawn by Blitz: whether it is, what shows of
+    // it, and the size of all of it.
+    in-out property <bool> page;
+    in-out property <image> page-picture;
+    in-out property <length> page-width;
+    in-out property <length> page-height;
+    callback page-view(length, length, length, length);
+    callback page-clicked(length, length);
+    pure callback page-over-link(length, length) -> bool;
+    // The message as sent goes to WebView2 instead, to compare.
+    in-out property <bool> webview;
     callback original-area(length, length, length, length);
     // Whether the WebView2 panel may be seen: nothing covers the pane.
     callback original-shown(bool);
@@ -545,7 +556,7 @@ export component MainWindow inherits Window {
 
     // WebView2 is a window of its own over this one: it is hidden whenever
     // something should be drawn where it sits.
-    property <bool> original-shown: Mail.original && Shell.page == Page.mail && Shell.accounts.length > 0
+    property <bool> original-shown: Mail.original && Mail.webview && Shell.page == Page.mail && Shell.accounts.length > 0
         && Mail.reader.open && !Mail.reader.loading && Mail.selection-count <= 1 && !Mail.compose.open
         && !Mail.select-text && !Shell.settings-open && !Mail.move-open;
     changed original-shown => { Mail.original-shown(self.original-shown); }
@@ -704,6 +715,14 @@ export component MainWindow inherits Window {
                         show-images => { Mail.show-images(); }
                         original: Mail.original;
                         toggle-original => { Mail.toggle-original(); }
+                        page: Mail.page;
+                        page-picture: Mail.page-picture;
+                        page-width: Mail.page-width;
+                        page-height: Mail.page-height;
+                        page-view(width, height, x, y) => { Mail.page-view(width, height, x, y); }
+                        page-clicked(x, y) => { Mail.page-clicked(x, y); }
+                        page-over-link(x, y) => { return Mail.page-over-link(x, y); }
+                        webview: Mail.webview;
                         original-area(x, y, width, height) => { Mail.original-area(x, y, width, height); }
                         toggle-select-text => { Mail.select-text = !Mail.select-text; }
                         open-attachment(id) => { Mail.open-attachment(id); }

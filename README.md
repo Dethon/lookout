@@ -64,7 +64,23 @@ Compared with Outlook: true WYSIWYG composing (formatting is written as
 markdown, with a preview), conversation view, Focused Inbox, rules, categories (shown, not edited),
 shared and delegated mailboxes and calendars, editing a whole recurring
 series (single occurrences can be edited), scheduling assistant, offline
-sending queue, Windows toast notifications, and an installer.
+sending queue, Windows toast notifications, and automatic updates.
+
+## Install
+
+Download from [Releases](https://github.com/Dethon/lookout/releases):
+
+- **Windows**: run `Lookout-<version>-setup.exe`, which installs for your
+  user without administrator rights; uninstall from Settings › Apps. It is
+  not code-signed, so SmartScreen warns on first run: *More info*, then
+  *Run anyway*. `/S` installs silently. Or unzip
+  `lookout-<version>-windows-x64.zip` anywhere and run `lookout.exe`.
+- **Debian, Ubuntu**: `sudo apt install ./lookout_<version>_amd64.deb`.
+- **Other Linux**: unpack `lookout-<version>-linux-x64.tar.gz` and run
+  `./install.sh`, which installs to `~/.local`.
+
+Uninstalling keeps your accounts, cache and settings (see *Build* for
+where), so a reinstall picks up where you left off.
 
 ## Signing in
 
@@ -96,6 +112,16 @@ on Windows Lookout uses the SQLite that comes with the system
 writes from `winsqlite3.def`.
 
     cargo xwin build --release --target x86_64-pc-windows-msvc -p lookout
+
+`scripts/package.py` builds both and writes the packages to `dist/`. The
+Windows installer is defined in `installer/lookout.nsi` and built with
+[NSIS](https://nsis.sourceforge.io); without `makensis` installed the script
+unpacks it into `target/nsis`, no root needed. Set `PUBLISHER="Your Name"`
+to name a publisher in it.
+
+The icon is drawn in `crates/app/assets/icon.svg`; after changing it,
+`cargo run -p lookout --example icon` regenerates the PNG, the `.ico` and the
+installer's side panel.
 
 Data lives in `%LOCALAPPDATA%\lookout` (`~/.local/share/lookout` on Linux):
 `cache.sqlite3`, `config.json` and `lookout.log`. `LOOKOUT_DATA_DIR`

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lookout
+GenericName=Mail Client
+Comment=Read Outlook.com and Microsoft 365 mail, calendars and contacts
+Exec=lookout
+Icon=lookout
+Terminal=false
+Categories=Network;Email;Office;Calendar;ContactManagement;
+Keywords=Outlook;Mail;Email;Calendar;Contacts;Microsoft 365;

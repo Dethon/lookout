@@ -1,5 +1,7 @@
 //! Regenerates the icon files from `assets/icon.svg`: `assets/icon.png`,
-//! the window icon, and `assets/icon.ico`, the Windows executable's icon.
+//! the window icon, `assets/icon.ico`, the Windows executable's icon, and
+//! `installer/welcome.bmp`, the side panel of the installer's first and
+//! last pages.
 //!
 //!   cargo run -p lookout --example icon
 
@@ -10,6 +12,12 @@ use resvg::{tiny_skia, usvg};
 const SIZE: u32 = 128;
 // Sizes Windows picks from for the taskbar, Explorer views and Alt+Tab.
 const ICO_SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+// NSIS's welcome-page panel, and the icon's size on it.
+const PANEL: (u32, u32) = (164, 314);
+const PANEL_ICON: u32 = 96;
+// The app's light background, top and bottom of the panel.
+const PANEL_TOP: [u8; 3] = [0xfa, 0xfa, 0xfa];
+const PANEL_BOTTOM: [u8; 3] = [0xe4, 0xea, 0xf3];
 
 /// Draws the icon at `size` pixels.
 fn render(tree: &usvg::Tree, size: u32) -> Result<image::RgbaImage, Box<dyn std::error::Error>> {
@@ -26,6 +34,30 @@ fn render(tree: &usvg::Tree, size: u32) -> Result<image::RgbaImage, Box<dyn std:
         })
         .collect();
     Ok(image::RgbaImage::from_raw(size, size, pixels).ok_or("the icon has an unexpected size")?)
+}
+
+/// The installer's side panel: the app's background with the icon a third
+/// of the way down. BMP has no transparency, so the icon is blended onto
+/// the background here.
+fn panel(icon: &image::RgbaImage) -> image::RgbImage {
+    let (width, height) = PANEL;
+    let left = (width - icon.width()) / 2;
+    let top = height / 3 - icon.height() / 2;
+    image::RgbImage::from_fn(width, height, |x, y| {
+        let fraction = y as f32 / (height - 1) as f32;
+        let mut pixel: [f32; 3] = std::array::from_fn(|channel| {
+            f32::from(PANEL_TOP[channel]) * (1.0 - fraction) + f32::from(PANEL_BOTTOM[channel]) * fraction
+        });
+        let inside = (left..left + icon.width()).contains(&x) && (top..top + icon.height()).contains(&y);
+        if inside {
+            let over = icon.get_pixel(x - left, y - top).0;
+            let alpha = f32::from(over[3]) / 255.0;
+            for (channel, value) in pixel.iter_mut().enumerate() {
+                *value = f32::from(over[channel]) * alpha + *value * (1.0 - alpha);
+            }
+        }
+        image::Rgb(pixel.map(|value| value.round() as u8))
+    })
 }
 
 /// An `.ico` file holding one PNG image per size, which Windows reads
@@ -68,6 +100,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.ico");
     std::fs::write(path, ico(&images))?;
+    println!("wrote {path}");
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../installer/welcome.bmp");
+    panel(&render(&tree, PANEL_ICON)?).save(path)?;
     println!("wrote {path}");
     Ok(())
 }

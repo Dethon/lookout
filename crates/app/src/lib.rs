@@ -6,6 +6,7 @@ mod calendar_ui;
 mod editor;
 mod engine;
 mod format;
+mod instance;
 mod logging;
 mod mail_ui;
 mod models;
@@ -20,6 +21,7 @@ mod viewer;
 slint::include_modules!();
 
 pub use app::App;
+pub use instance::claim as claim_instance;
 pub use logging::init as init_logging;
 
 /// Keeps glibc from growing a separate heap for every thread.

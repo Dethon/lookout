@@ -6,6 +6,9 @@ use slint::ComponentHandle;
 fn main() -> Result<(), slint::PlatformError> {
     lookout::tune_allocator();
     lookout::init_logging();
+    if !lookout::claim_instance() {
+        return Ok(());
+    }
 
     let ui = MainWindow::new()?;
     let _app = match App::start(&ui) {

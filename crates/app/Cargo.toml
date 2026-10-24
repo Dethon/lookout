@@ -29,8 +29,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 [target.'cfg(windows)'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57", default-features = false }
-# Asks whether Windows wants the window painted (see `repaint.rs`).
-windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi"] }
+# Asks whether Windows wants the window painted (see `repaint.rs`), and
+# keeps to one window (see `instance.rs`).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"

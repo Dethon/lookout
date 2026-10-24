@@ -27,8 +27,9 @@ pub struct CalState {
     days: RefCell<Vec<NaiveDate>>,
     colors: RefCell<HashMap<(String, String), Color>>,
     names: RefCell<HashMap<(String, String), String>>,
-    /// The calendars events can be added to, as the editor lists them.
-    editable: RefCell<Vec<(String, String)>>,
+    /// The calendars as the editor lists them, and whether events can be
+    /// added to each.
+    pickable: RefCell<Vec<(String, String, bool)>>,
     open: RefCell<Option<(String, String)>>,
     /// The description being edited, as text and as it was, so an
     /// unchanged one keeps its formatting.
@@ -44,7 +45,7 @@ impl CalState {
             days: RefCell::new(Vec::new()),
             colors: RefCell::new(HashMap::new()),
             names: RefCell::new(HashMap::new()),
-            editable: RefCell::new(Vec::new()),
+            pickable: RefCell::new(Vec::new()),
             open: RefCell::new(None),
             original_body: RefCell::new(None),
             clock: Timer::default(),
@@ -215,8 +216,9 @@ fn load_calendars(app: &App, ui: &MainWindow) {
     let mut rows = Vec::new();
     let mut colors = HashMap::new();
     let mut names = HashMap::new();
-    let mut editable = Vec::new();
+    let mut pickable = Vec::new();
     let mut labels: Vec<SharedString> = Vec::new();
+    let mut writable = Vec::new();
     let mut last_account = String::new();
     for (index, (account, calendar, shown)) in calendars.iter().enumerate() {
         if *account != last_account {
@@ -235,17 +237,18 @@ fn load_calendars(app: &App, ui: &MainWindow) {
             shown: *shown,
             header: false,
         });
-        if calendar.can_edit {
-            editable.push((account.clone(), calendar.id.clone()));
-            labels.push(label(app, account, calendar, several).into());
-        }
+        pickable.push((account.clone(), calendar.id.clone(), calendar.can_edit));
+        let name = label(app, account, calendar, several);
+        labels.push(if calendar.can_edit { name } else { format!("{name} (read-only)") }.into());
+        writable.push(calendar.can_edit);
     }
     *app.cal.colors.borrow_mut() = colors;
     *app.cal.names.borrow_mut() = names;
-    *app.cal.editable.borrow_mut() = editable;
+    *app.cal.pickable.borrow_mut() = pickable;
     let cal = ui.global::<Cal>();
     cal.set_calendars(ModelRc::new(VecModel::from(rows)));
     cal.set_calendar_labels(ModelRc::new(VecModel::from(labels)));
+    cal.set_calendar_writable(ModelRc::new(VecModel::from(writable)));
 }
 
 fn label(app: &App, account: &str, calendar: &Calendar, several: bool) -> String {
@@ -567,9 +570,12 @@ fn next_half_hour() -> i64 {
 
 fn default_calendar_index(app: &App) -> i32 {
     let calendars = app.store.calendars().unwrap_or_default();
-    let editable = app.cal.editable.borrow();
-    let default = calendars.iter().find(|(_, calendar, _)| calendar.is_default).map(|(account, calendar, _)| (account.clone(), calendar.id.clone()));
-    default.and_then(|key| editable.iter().position(|candidate| *candidate == key)).unwrap_or(0) as i32
+    let pickable = app.cal.pickable.borrow();
+    let default = calendars.iter().find(|(_, calendar, _)| calendar.is_default && calendar.can_edit).map(|(account, calendar, _)| (account.clone(), calendar.id.clone()));
+    default
+        .and_then(|(account, id)| pickable.iter().position(|candidate| candidate.0 == account && candidate.1 == id))
+        .or_else(|| pickable.iter().position(|candidate| candidate.2))
+        .unwrap_or(0) as i32
 }
 
 fn new_event(app: &Rc<App>, start: i64, end: i64, all_day: bool) {
@@ -604,7 +610,7 @@ fn edit_event(app: &Rc<App>) {
     };
     let calendar_index = app
         .cal
-        .editable
+        .pickable
         .borrow()
         .iter()
         .position(|candidate| candidate.0 == event.account && candidate.1 == event.calendar_id)
@@ -671,11 +677,15 @@ fn save(app: &Rc<App>, editor: EventEditor) {
     if !invalid.is_empty() {
         return editor_error(app, &format!("Not an address: {}", invalid.join(", ")));
     }
+    let picked = app.cal.pickable.borrow().get(editor.calendar_index.max(0) as usize).cloned();
     let Some((account, calendar_id)) = (if editor.id.is_empty() {
-        app.cal.editable.borrow().get(editor.calendar_index.max(0) as usize).cloned()
+        match picked {
+            Some((account, id, true)) => Some((account, id)),
+            Some(_) => return editor_error(app, "Events can't be added to a read-only calendar."),
+            None => None,
+        }
     } else {
-        let calendar = app.cal.editable.borrow().get(editor.calendar_index.max(0) as usize).map(|c| c.1.clone());
-        Some((editor.account.to_string(), calendar.unwrap_or_default()))
+        Some((editor.account.to_string(), picked.map(|c| c.1).unwrap_or_default()))
     }) else {
         return editor_error(app, "There is no calendar to add the event to.");
     };

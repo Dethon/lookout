@@ -494,6 +494,9 @@ export component EventDetailDialog inherits Overlay {
 export component EventEditorDialog inherits Overlay {
     in-out property <EventEditor> editor;
     in property <[string]> calendar-labels;
+    in property <[bool]> calendar-writable;
+    // A new event can't go in a read-only calendar.
+    property <bool> read-only-picked: root.editor.id == "" && !root.calendar-writable[root.editor.calendar-index];
     callback save(EventEditor);
     callback cancel();
     callback attendee-typed(string);
@@ -537,6 +540,14 @@ export component EventEditorDialog inherits Overlay {
                 enabled: root.editor.id == "";
                 model: root.calendar-labels;
                 current-index <=> root.editor.calendar-index;
+            }
+        }
+        if root.read-only-picked: HorizontalLayout {
+            padding-left: 88px;
+            Text {
+                text: "Events can't be added to a read-only calendar.";
+                color: Theme.text-faint;
+                font-size: Theme.small;
             }
         }
         HorizontalLayout {
@@ -645,7 +656,7 @@ export component EventEditorDialog inherits Overlay {
             ToolButton {
                 label: root.editor.saving ? "Saving…" : "Save";
                 primary: true;
-                enabled: !root.editor.saving;
+                enabled: !root.editor.saving && !root.read-only-picked;
                 clicked => { root.save(root.editor); }
             }
         }

@@ -154,6 +154,8 @@ export global Cal {
     in property <bool> busy;
     in property <[CalendarRow]> calendars;
     in property <[string]> calendar-labels;
+    // Per label, whether events can be added to that calendar.
+    in property <[bool]> calendar-writable;
     in property <EventDetail> detail;
     in-out property <EventEditor> editor;
     callback today();
@@ -864,6 +866,7 @@ export component MainWindow inherits Window {
     if Cal.editor.open: EventEditorDialog {
         editor <=> Cal.editor;
         calendar-labels: Cal.calendar-labels;
+        calendar-writable: Cal.calendar-writable;
         save(editor) => { Cal.save-event(editor); }
         cancel => { Cal.cancel-editor(); }
     }

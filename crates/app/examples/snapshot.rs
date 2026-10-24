@@ -5,7 +5,8 @@
 //! `SNAPSHOT_PAGE` picks `mail` (the default), `compose`, `calendar`,
 //! `month`, `people`, `welcome` or `settings`; `SNAPSHOT_DARK=1` uses the dark
 //! theme; `SNAPSHOT_CLICK=x,y` clicks there first; `SNAPSHOT_UPDATE=1` shows
-//! a new version ready to install.
+//! a new version ready to install. On the calendar, `SNAPSHOT_EVENT=1` opens
+//! an event and `SNAPSHOT_EDITOR=1` a new one on a read-only calendar.
 
 use std::rc::Rc;
 
@@ -249,6 +250,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join_url: "https://teams.example/j".into(),
                 calendar: "Calendar".into(),
                 color: blue,
+                ..Default::default()
+            });
+        }
+        if std::env::var_os("SNAPSHOT_EDITOR").is_some() {
+            cal.set_calendar_labels(strings(&["Calendar", "Birthdays (read-only)"]));
+            cal.set_calendar_writable(ModelRc::new(VecModel::from(vec![true, false])));
+            cal.set_editor(EventEditor {
+                open: true,
+                calendar_index: 1,
+                subject: "Design review".into(),
+                start_date: "2026-10-21".into(),
+                start_time: "10:00".into(),
+                end_date: "2026-10-21".into(),
+                end_time: "12:00".into(),
+                reminder_index: 2,
                 ..Default::default()
             });
         }

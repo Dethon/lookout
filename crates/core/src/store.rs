@@ -343,11 +343,13 @@ impl Store {
             .optional()?)
     }
 
-    /// Recounts a folder's unread messages from the cache, after local changes.
-    pub fn adjust_unread(&self, account: &str, folder: &str, delta: i64) -> Result<()> {
+    /// Shifts a folder's unread and total counts after a local change, until
+    /// the next sync brings the server's.
+    pub fn adjust_counts(&self, account: &str, folder: &str, unread: i64, total: i64) -> Result<()> {
         self.db.execute(
-            "UPDATE folders SET unread = MAX(0, unread + ?3) WHERE account = ?1 AND id = ?2",
-            params![account, folder, delta],
+            "UPDATE folders SET unread = MAX(0, unread + ?3), total = MAX(0, total + ?4)
+             WHERE account = ?1 AND id = ?2",
+            params![account, folder, unread, total],
         )?;
         Ok(())
     }

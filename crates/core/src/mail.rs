@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::graph::{Page, encode};
-use crate::model::{Address, Attachment, Flag, MessageDetail, wire};
+use crate::model::{Address, Attachment, Flag, MessageDetail, MessageSummary, wire};
 use crate::{Graph, Result, Store, html};
 
 // Attachments up to this size go in one request; larger ones are uploaded
@@ -17,6 +17,20 @@ const INLINE_ATTACHMENT_LIMIT: usize = 3 * 1024 * 1024;
 
 fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Takes a message out of its folder's counts and adds it to those of
+/// `destination`, or to none if it is going for good.
+fn recount(store: &Store, summary: &MessageSummary, destination: Option<&str>) -> Result<()> {
+    if destination == Some(summary.folder_id.as_str()) {
+        return Ok(());
+    }
+    let unread = i64::from(!summary.is_read);
+    store.adjust_counts(&summary.account, &summary.folder_id, -unread, -1)?;
+    if let Some(destination) = destination {
+        store.adjust_counts(&summary.account, destination, unread, 1)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -98,7 +112,7 @@ pub async fn set_read(graph: &Graph, store: &Mutex<Store>, id: &str, read: bool,
             && detail.summary.is_read != read
         {
             store.set_read(account, id, read)?;
-            store.adjust_unread(account, &detail.summary.folder_id, if read { -1 } else { 1 })?;
+            store.adjust_counts(account, &detail.summary.folder_id, if read { -1 } else { 1 }, 0)?;
         }
     }
     cached();
@@ -127,11 +141,8 @@ pub async fn move_to(graph: &Graph, store: &Mutex<Store>, id: &str, destination:
         let store = lock(store);
         let detail = store.message(account, id)?;
         if let Some(detail) = &detail {
+            recount(&store, &detail.summary, Some(&folder))?;
             store.set_folder(account, id, &folder)?;
-            if !detail.summary.is_read {
-                store.adjust_unread(account, &detail.summary.folder_id, -1)?;
-                store.adjust_unread(account, &folder, 1)?;
-            }
         }
         detail
     };
@@ -149,15 +160,16 @@ pub async fn move_to(graph: &Graph, store: &Mutex<Store>, id: &str, destination:
 /// Moves a message to Deleted Items, or deletes it for good if it is there.
 pub async fn delete(graph: &Graph, store: &Mutex<Store>, id: &str, cached: impl FnOnce()) -> Result<()> {
     let account = graph.account_id();
-    let (folder, deleted_items) = {
+    let (summary, deleted_items) = {
         let store = lock(store);
-        (
-            store.message(account, id)?.map(|detail| detail.summary.folder_id),
-            store.well_known_folder(account, "deleteditems")?,
-        )
+        (store.message(account, id)?.map(|detail| detail.summary), store.well_known_folder(account, "deleteditems")?)
     };
-    if folder.is_some() && folder == deleted_items {
-        lock(store).remove_messages(account, &[id.to_owned()])?;
+    if let Some(summary) = summary.filter(|summary| Some(&summary.folder_id) == deleted_items.as_ref()) {
+        {
+            let mut store = lock(store);
+            recount(&store, &summary, None)?;
+            store.remove_messages(account, &[id.to_owned()])?;
+        }
         cached();
         graph.delete(&format!("/me/messages/{}", encode(id))).await
     } else {
@@ -214,7 +226,7 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
                 Bulk::Read(read) => {
                     if summary.is_read != *read {
                         store.set_read(account, id, *read)?;
-                        store.adjust_unread(account, &summary.folder_id, if *read { -1 } else { 1 })?;
+                        store.adjust_counts(account, &summary.folder_id, if *read { -1 } else { 1 }, 0)?;
                     }
                     json!({ "method": "PATCH", "url": url, "body": { "isRead": read } })
                 }
@@ -223,15 +235,13 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
                     json!({ "method": "PATCH", "url": url, "body": { "flag": { "flagStatus": flag.to_graph() } } })
                 }
                 Bulk::Delete if Some(&summary.folder_id) == deleted_items.as_ref() => {
+                    recount(&store, summary, None)?;
                     forget.push(id.clone());
                     json!({ "method": "DELETE", "url": url })
                 }
                 Bulk::Move(_) | Bulk::Delete => {
                     let destination = folder.clone().or_else(|| deleted_items.clone()).unwrap_or_else(|| "deleteditems".into());
-                    if !summary.is_read {
-                        store.adjust_unread(account, &summary.folder_id, -1)?;
-                        store.adjust_unread(account, &destination, 1)?;
-                    }
+                    recount(&store, summary, Some(&destination))?;
                     store.set_folder(account, id, &destination)?;
                     json!({ "method": "POST", "url": format!("{url}/move"), "body": { "destinationId": destination } })
                 }

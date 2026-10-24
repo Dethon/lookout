@@ -120,7 +120,7 @@ fn mailbox(method: &str, target: &str, body: &str, base: &str) -> (u16, String) 
         ("GET", p) if p.starts_with("/me/mailFolders?$top=100") => json!({
             "value": [
                 { "id": "dr", "displayName": "Drafts", "parentFolderId": "root", "totalItemCount": 1 },
-                { "id": "in", "displayName": "Inbox", "parentFolderId": "root", "childFolderCount": 1, "unreadItemCount": 2 },
+                { "id": "in", "displayName": "Inbox", "parentFolderId": "root", "childFolderCount": 1, "unreadItemCount": 2, "totalItemCount": 3 },
             ],
             "@odata.nextLink": format!("{base}/me/mailFolders/page2"),
         }),
@@ -235,8 +235,16 @@ async fn a_mailbox_syncs_end_to_end() {
     // Several at once go in one batch.
     mail::bulk(&graph, &store, &["m2".into(), "m3".into()], &mail::Bulk::Read(false), || {}).await.unwrap();
     assert!(!store.lock().unwrap().message("acct", "m3").unwrap().unwrap().summary.is_read);
+    let counts = |folder: &str| {
+        let folders = store.lock().unwrap().folders("acct").unwrap();
+        folders.into_iter().find(|f| f.id == folder).map(|f| (f.unread, f.total)).unwrap()
+    };
+    let (inbox, drafts) = (counts("in"), counts("dr"));
     mail::bulk(&graph, &store, &["m2".into(), "m3".into()], &mail::Bulk::Move("drafts".into()), || {}).await.unwrap();
     assert_eq!(store.lock().unwrap().folder_of("acct", "m2").unwrap().as_deref(), Some("dr"));
+    // The folders' counts follow at once, without waiting for a sync.
+    assert_eq!(counts("in"), (inbox.0 - 2, inbox.1 - 2));
+    assert_eq!(counts("dr"), (drafts.0 + 2, drafts.1 + 2));
 
     // Calendars and contacts.
     sync::sync_calendars(&graph, &store).await.unwrap();

@@ -142,6 +142,13 @@ impl Engine {
     pub fn idle() -> Self {
         Self { requests: unbounded_channel().0 }
     }
+
+    /// An engine whose requests the test answers.
+    #[cfg(test)]
+    pub fn queued() -> (Self, UnboundedReceiver<Request>) {
+        let (requests, receiver) = unbounded_channel();
+        (Self { requests }, receiver)
+    }
 }
 
 async fn run(store_path: PathBuf, config: Config, notify: Notify, mut receiver: UnboundedReceiver<Request>) {

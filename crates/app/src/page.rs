@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyrender::ImageRenderer;
-use anyrender_vello_cpu::VelloCpuImageRenderer;
+use anyrender_vello_cpu::{ImageCacheConfig, VelloCpuImageRenderer};
 use blitz_dom::{DocumentConfig, Point, StyleThreading, UserAgentStylesheet, local_name};
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request as NetRequest};
@@ -33,6 +33,10 @@ td[align=right i] > table, div[align=right i] > table { margin-left: auto; }
 // Past this, the rest of a very long message isn't laid out at all.
 const MAX_HEIGHT: f32 = 60_000.0;
 
+// The renderer keeps its own copy of the pictures it draws, up to this many
+// bytes beyond those in view; the default is 64 MB.
+const PICTURE_CACHE: usize = 32 * 1024 * 1024;
+
 /// Runs a call into Blitz, catching a panic. A panic leaves the document in
 /// an unknown state, so the caller drops it.
 pub fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
@@ -52,7 +56,8 @@ pub fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
 
 pub struct Page {
     doc: HtmlDocument,
-    renderer: Option<(u32, u32, VelloCpuImageRenderer)>,
+    /// The renderer, and the physical size it draws.
+    renderer: Option<((u32, u32), VelloCpuImageRenderer)>,
     /// The viewport laid out for: physical width and height, and the scale.
     viewport: (u32, u32, f32),
     arrived: Arc<AtomicBool>,
@@ -100,10 +105,19 @@ impl Page {
     /// pixels.
     pub fn paint(&mut self, x: f32, y: f32) -> Image {
         let (width, height, scale) = self.viewport;
-        if !matches!(self.renderer, Some((w, h, _)) if w == width && h == height) {
-            self.renderer = Some((width, height, VelloCpuImageRenderer::new(width, height)));
+        let (size, renderer) = self.renderer.get_or_insert_with(|| {
+            let cache = ImageCacheConfig { max_bytes: PICTURE_CACHE, ..Default::default() };
+            ((width, height), VelloCpuImageRenderer::with_image_cache_config(width, height, cache))
+        });
+        if *size != (width, height) {
+            // Keeps the pictures it has converted.
+            *size = (width, height);
+            renderer.resize(width, height);
         }
-        let Some((_, _, renderer)) = self.renderer.as_mut() else { unreachable!() };
+        // The renderer keeps what it was told to draw until reset: without
+        // this, every paint drew all the earlier ones again, slower each
+        // time, and pictures since forgotten made it panic.
+        renderer.reset();
         self.doc.set_viewport_scroll(Point { x: f64::from(x), y: f64::from(y) });
         let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
         let doc = &mut self.doc;
@@ -190,6 +204,40 @@ mod tests {
         assert!(height >= 1000.0, "{height}");
         let picture = page.paint(0.0, 500.0);
         assert_eq!((picture.size().width, picture.size().height), (400, 300));
+    }
+
+    #[test]
+    fn a_paint_shows_only_what_is_in_view_now() {
+        let mut page = page("<body style=\"margin:0\"><div style=\"height:200px;background:#ff0000\"></div><div style=\"height:3000px\"></div></body>");
+        page.paint(0.0, 0.0);
+        let picture = page.paint(0.0, 2000.0).to_rgba8().unwrap();
+        let first = picture.as_slice()[0];
+        assert_ne!((first.r, first.g, first.b), (255, 0, 0), "an earlier paint shows through");
+    }
+
+    #[test]
+    fn pictures_scrolled_away_dont_break_later_paints() {
+        let (engine, mut requests) = Engine::queued();
+        let resources = Resources::new(engine, String::new(), String::new(), true, || {});
+        let mut page = Page::new(
+            "<body style=\"margin:0\"><img src=\"https://example.com/a.png\" width=\"100\" height=\"100\">\
+             <div style=\"height:3000px\"></div></body>",
+            resources,
+        );
+        page.view(400.0, 300.0, 1.0);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(100, 100, image::Rgba([0, 0, 255, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        while let Ok(request) = requests.try_recv() {
+            if let Request::Resource { reply, .. } = request {
+                reply(Some(png.get_ref().clone()));
+            }
+        }
+        page.load();
+        page.paint(0.0, 0.0);
+        // Long enough for the renderer to forget the picture.
+        for frame in 0..100 {
+            page.paint(0.0, 1000.0 + frame as f32);
+        }
     }
 
     #[test]

@@ -1,0 +1,1173 @@
+// The mail page: folders, the message list, and the reading pane or composer.
+
+import { ListView, ScrollView, TextEdit, ComboBox, CheckBox, Spinner } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+import { Icon, IconButton, ToolButton, Avatar, Divider, VDivider, Field, SearchBox } from "widgets.slint";
+import { FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult } from "types.slint";
+
+export component FolderPane inherits Rectangle {
+    in property <[FolderRow]> folders;
+    in property <string> selected-account;
+    in property <string> selected-folder;
+    callback new-message();
+    callback folder-clicked(string, string);
+    callback add-account();
+    // Messages dragged from the list were dropped on a folder.
+    callback dropped-on(string, string);
+    callback toggle-expanded(string, string);
+    callback toggle-favourite(string, string);
+    background: Theme.background;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+        ToolButton {
+            icon: Icons.edit;
+            label: "New mail";
+            primary: true;
+            clicked => { root.new-message(); }
+        }
+        list := ListView {
+            // The scroll bar is drawn over the list; rows stop short of it.
+            property <length> gutter: self.content-height > self.visible-height ? 14px : 0px;
+            for folder in root.folders: Rectangle {
+                height: folder.divider ? 13px : folder.header ? 34px : 32px;
+                if folder.divider: Rectangle {
+                    x: 8px;
+                    width: parent.width - list.gutter - 16px;
+                    height: 1px;
+                    background: Theme.divider;
+                }
+                if !folder.divider: Rectangle {
+                    x: 0;
+                    width: parent.width - list.gutter;
+                    border-radius: Theme.radius;
+                    property <bool> selected: !folder.header && folder.account == root.selected-account && folder.id == root.selected-folder;
+                    background: drop.has-drag ? Theme.selected-strong : selected ? Theme.selected : touch.has-hover && !folder.header ? Theme.hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 2px + folder.depth * 14px;
+                        padding-right: 8px;
+                        spacing: 4px;
+                        // Shows or hides the subfolders.
+                        Rectangle {
+                            width: 18px;
+                            if folder.expandable: Icon {
+                                icon: folder.expanded ? "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" : Icons.right;
+                                width: 16px;
+                                height: 16px;
+                                color: Theme.text-faint;
+                            }
+                            TouchArea {
+                                enabled: folder.expandable;
+                                mouse-cursor: pointer;
+                                clicked => { root.toggle-expanded(folder.account, folder.id); }
+                            }
+                        }
+                        if !folder.header: Icon {
+                            y: (parent.height - self.height) / 2;
+                            icon: folder.icon;
+                            width: 16px;
+                            height: 16px;
+                            color: selected ? Theme.accent : Theme.text-muted;
+                        }
+                        Text {
+                            text: folder.name;
+                            color: folder.header ? Theme.text-muted : Theme.text;
+                            font-size: folder.header ? Theme.small : Theme.font-size;
+                            font-weight: folder.header || folder.unread > 0 ? 600 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if folder.unread > 0: Text {
+                            text: folder.unread;
+                            color: Theme.accent;
+                            font-size: Theme.small;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    touch := TouchArea {
+                        x: 20px + folder.depth * 14px;
+                        width: parent.width - self.x;
+                        enabled: !folder.header || folder.expandable;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if (folder.header) {
+                                root.toggle-expanded(folder.account, folder.id);
+                            } else {
+                                root.folder-clicked(folder.account, folder.id);
+                            }
+                        }
+                    }
+                    if !folder.header: ContextMenuArea {
+                        Menu {
+                            MenuItem {
+                                title: folder.favourite ? "Remove from Favourites" : "Add to Favourites";
+                                activated => { root.toggle-favourite(folder.account, folder.id); }
+                            }
+                        }
+                    }
+                    drop := DropArea {
+                        enabled: !folder.header;
+                        can-drop(event) => { return DragAction.move; }
+                        dropped(event) => {
+                            root.dropped-on(folder.account, folder.id);
+                            return DragAction.move;
+                        }
+                    }
+                }
+            }
+        }
+        ToolButton {
+            icon: Icons.add;
+            label: "Add account";
+            tint: Theme.text-muted;
+            clicked => { root.add-account(); }
+        }
+    }
+}
+
+export component MessageList inherits Rectangle {
+    in property <[MessageRow]> messages;
+    in property <string> title;
+    in property <int> selected: -1;
+    in property <bool> searching;
+    in property <bool> unread-only;
+    in property <bool> busy;
+    in property <string> empty-text: "Nothing here";
+    in-out property <string> search-text;
+    // The row, and whether Ctrl and Shift were held.
+    callback select(int, bool, bool);
+    callback drag-started(int);
+    // A press and release without dragging.
+    callback row-clicked(int);
+    in property <data-transfer> drag-payload;
+    callback search(string);
+    callback search-server();
+    callback toggle-unread-only();
+    callback toggle-flag(int);
+    callback delete-at(int);
+    callback toggle-read(int);
+    callback archive-at(int);
+    callback move-at(int);
+    callback scrolled-to-end();
+    background: Theme.surface;
+
+    in property <int> focus-request;
+    changed focus-request => { search.focus-input(); }
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 8px;
+            search := SearchBox {
+                text <=> root.search-text;
+                placeholder: "Search mail";
+                edited(text) => { root.search(text); }
+                accepted(text) => { root.search(text); }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 8px;
+            height: 36px;
+            spacing: 6px;
+            Text {
+                text: root.title;
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.busy: Spinner {
+                width: 16px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                indeterminate: true;
+            }
+            if root.searching: ToolButton {
+                y: (parent.height - self.height) / 2;
+                label: "Search server";
+                icon: Icons.search;
+                tint: Theme.accent;
+                clicked => { root.search-server(); }
+            }
+            if !root.searching: ToolButton {
+                y: (parent.height - self.height) / 2;
+                label: root.unread-only ? "Unread" : "All";
+                tint: root.unread-only ? Theme.accent : Theme.text-muted;
+                clicked => { root.toggle-unread-only(); }
+            }
+        }
+        Divider { }
+        if root.messages.length == 0 && !root.busy: Text {
+            text: root.empty-text;
+            color: Theme.text-faint;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            height: 80px;
+        }
+        list := ListView {
+            vertical-stretch: 1;
+            changed content-y => {
+                if (-self.content-y + self.visible-height >= self.content-height - 200px) {
+                    root.scrolled-to-end();
+                }
+            }
+            for message[index] in root.messages: Rectangle {
+                property <length> heading: message.group != "" ? 30px : 0px;
+                height: heading + Theme.row-height;
+                if message.group != "": Rectangle {
+                    y: 0;
+                    height: 30px;
+                    background: Theme.surface-alt;
+                    Text {
+                        x: 14px;
+                        text: message.group;
+                        color: Theme.text-muted;
+                        font-size: Theme.small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle {
+                y: heading;
+                height: Theme.row-height;
+                property <bool> is-selected: index == root.selected || message.selected;
+                background: drag.dragging ? Theme.selected-strong : is-selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+                // Unread bar.
+                Rectangle {
+                    x: 0;
+                    width: 3px;
+                    height: parent.height - 12px;
+                    y: 6px;
+                    background: message.unread ? Theme.accent : transparent;
+                }
+                // Dragged onto a folder, the selection moves there.
+                drag := DragArea {
+                    allow-move: true;
+                    data: root.drag-payload;
+                    changed dragging => {
+                        if (self.dragging) {
+                            root.drag-started(index);
+                        }
+                    }
+                    touch := TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                root.select(index, event.modifiers.control, event.modifiers.shift);
+                            }
+                        }
+                        clicked => { root.row-clicked(index); }
+                    }
+                }
+                ContextMenuArea {
+                    Menu {
+                        MenuItem {
+                            title: message.unread ? "Mark as read" : "Mark as unread";
+                            activated => { root.toggle-read(index); }
+                        }
+                        MenuItem {
+                            title: message.flagged ? "Clear flag" : "Flag";
+                            activated => { root.toggle-flag(index); }
+                        }
+                        MenuItem {
+                            title: "Archive";
+                            activated => { root.archive-at(index); }
+                        }
+                        MenuItem {
+                            title: "Move to…";
+                            activated => { root.move-at(index); }
+                        }
+                        MenuItem {
+                            title: "Delete";
+                            activated => { root.delete-at(index); }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-right: 16px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        if message.draft: Text {
+                            text: "[Draft]";
+                            color: Theme.danger;
+                            font-size: Theme.font-size;
+                        }
+                        Text {
+                            text: message.sender;
+                            color: Theme.text;
+                            font-size: Theme.font-size;
+                            font-weight: message.unread ? 700 : 400;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        // Quick actions on hover, the date otherwise.
+                        if touch.has-hover: HorizontalLayout {
+                            spacing: 0px;
+                            IconButton {
+                                icon: message.unread ? Icons.mail-open : Icons.mail;
+                                tooltip: message.unread ? "Mark as read" : "Mark as unread";
+                                size: 22px;
+                                icon-size: 15px;
+                                clicked => { root.toggle-read(index); }
+                            }
+                            IconButton {
+                                icon: Icons.archive;
+                                tooltip: "Archive";
+                                size: 22px;
+                                icon-size: 15px;
+                                clicked => { root.archive-at(index); }
+                            }
+                            IconButton {
+                                icon: Icons.delete;
+                                tooltip: "Delete (Del)";
+                                size: 22px;
+                                icon-size: 15px;
+                                clicked => { root.delete-at(index); }
+                            }
+                        }
+                        if !touch.has-hover: Text {
+                            text: message.date;
+                            color: message.unread ? Theme.accent : Theme.text-muted;
+                            font-size: Theme.small;
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        if message.important: Icon {
+                            icon: Icons.important;
+                            color: Theme.danger;
+                            width: 12px;
+                            height: 14px;
+                        }
+                        Text {
+                            text: message.subject == "" ? "(no subject)" : message.subject;
+                            color: message.unread ? Theme.accent : Theme.text;
+                            font-size: Theme.font-size;
+                            font-weight: message.unread ? 600 : 400;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if message.attachment: Icon {
+                            icon: Icons.attach;
+                            width: 14px;
+                            height: 14px;
+                        }
+                        IconButton {
+                            icon: message.flagged ? Icons.flag : message.completed ? Icons.check : Icons.flag-outline;
+                            tooltip: message.flagged ? "Clear flag" : "Flag";
+                            tint: message.flagged ? Theme.flag : Theme.text-faint;
+                            size: 18px;
+                            icon-size: 14px;
+                            opacity: message.flagged || message.completed || touch.has-hover ? 1 : 0;
+                            clicked => { root.toggle-flag(index); }
+                        }
+                    }
+                    Text {
+                        text: message.preview;
+                        color: Theme.text-muted;
+                        font-size: Theme.small + 1px;
+                        overflow: elide;
+                    }
+                }
+                Divider {
+                    y: parent.height - 1px;
+                    x: 14px;
+                    width: parent.width - 14px;
+                }
+                }
+            }
+        }
+    }
+}
+
+// The message body: paragraphs, headings, rules and pictures.
+export component BodyView inherits Rectangle {
+    in property <[BodyBlock]> blocks;
+    callback link-clicked(string);
+    list := ListView {
+        width: 100%;
+        height: 100%;
+        for block in root.blocks: Rectangle {
+            property <length> left: 20px + block.indent * 18px + block.quote * 14px;
+            height: content.preferred-height;
+            content := VerticalLayout {
+                padding-left: left;
+                padding-right: 24px;
+                padding-top: block.kind == 1 ? 10px : block.kind == 2 ? 8px : 3px;
+                padding-bottom: block.kind == 2 ? 8px : 5px;
+                if block.kind == 0 || block.kind == 1: StyledText {
+                    text: block.text;
+                    default-color: Theme.text;
+                    link-color: Theme.link;
+                    default-font-family: block.mono ? "Consolas" : "";
+                    default-font-size: block.kind == 1 ? (block.level <= 1 ? 22px : block.level == 2 ? 19px : 16px) : Theme.font-size;
+                    link-clicked(link) => { root.link-clicked(link); }
+                }
+                if block.kind == 2: Divider { }
+                if block.kind == 3: Rectangle {
+                    // The row shrinks as a whole when the pane is narrower.
+                    property <float> scale: min(1, (root.width - left - 44px) / max(1px, block.row-width));
+                    height: block.row-height * scale;
+                    for picture in block.pictures: Rectangle {
+                        x: picture.x * scale;
+                        y: 0;
+                        width: picture.width * scale;
+                        height: picture.height * scale;
+                        if picture.loaded: Image {
+                            width: 100%;
+                            height: 100%;
+                            source: picture.image;
+                            image-fit: contain;
+                        }
+                        if !picture.loaded: Rectangle {
+                            border-width: 1px;
+                            border-color: Theme.divider;
+                            background: Theme.surface-alt;
+                            clip: true;
+                            HorizontalLayout {
+                                padding: 5px;
+                                spacing: 5px;
+                                alignment: start;
+                                Icon {
+                                    icon: Icons.image;
+                                    color: Theme.text-faint;
+                                    width: 16px;
+                                    height: 16px;
+                                }
+                                Text {
+                                    text: picture.alt == "" ? "Picture" : picture.alt;
+                                    color: picture.link != "" ? Theme.link : Theme.text-faint;
+                                    font-size: Theme.small;
+                                    overflow: elide;
+                                    vertical-alignment: top;
+                                }
+                            }
+                        }
+                        TouchArea {
+                            enabled: picture.link != "";
+                            mouse-cursor: picture.link != "" ? pointer : default;
+                            clicked => { root.link-clicked(picture.link); }
+                        }
+                    }
+                }
+            }
+            // A bar for each level of quoting.
+            for level in block.quote: Rectangle {
+                x: 20px + block.indent * 18px + level * 14px + 2px;
+                width: 3px;
+                height: parent.height;
+                background: Theme.quote-bar;
+            }
+        }
+    }
+}
+
+export component ReadingPane inherits Rectangle {
+    in property <Reader> reader;
+    in property <[BodyBlock]> blocks;
+    in property <[AttachmentRow]> attachments;
+    in property <bool> select-text;
+    // Messages picked with Ctrl or Shift; past one, they are acted on together.
+    in property <int> selection-count;
+    callback bulk(string);
+    callback clear-selection();
+    callback reply();
+    callback reply-all();
+    callback forward();
+    callback delete();
+    callback archive();
+    callback move();
+    callback toggle-flag();
+    callback toggle-read();
+    callback show-images();
+    // The body as sent, in WebView2, instead of drawn natively.
+    in property <bool> original;
+    callback toggle-original();
+    // Where the WebView2 panel goes, in window coordinates.
+    callback original-area(length, length, length, length);
+    callback toggle-select-text();
+    callback open-attachment(string);
+    callback save-attachment(string);
+    callback link-clicked(string);
+    callback edit-draft();
+    background: Theme.surface;
+
+    if root.selection-count > 1: VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+        Icon {
+            x: (parent.width - self.width) / 2;
+            icon: Icons.mail;
+            color: Theme.accent;
+            width: 48px;
+            height: 48px;
+        }
+        Text {
+            text: root.selection-count + " messages selected";
+            font-size: 20px;
+            font-weight: 600;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            ToolButton { icon: Icons.mail-open; label: "Mark read"; clicked => { root.bulk("read"); } }
+            ToolButton { icon: Icons.mail; label: "Mark unread"; clicked => { root.bulk("unread"); } }
+            ToolButton { icon: Icons.flag-outline; label: "Flag"; clicked => { root.bulk("flag"); } }
+            ToolButton { icon: Icons.archive; label: "Archive"; clicked => { root.bulk("archive"); } }
+            ToolButton { icon: Icons.move; label: "Move"; clicked => { root.bulk("move"); } }
+            ToolButton { icon: Icons.delete; label: "Delete"; tint: Theme.danger; clicked => { root.bulk("delete"); } }
+        }
+        HorizontalLayout {
+            alignment: center;
+            ToolButton {
+                label: "Clear selection";
+                tint: Theme.text-muted;
+                clicked => { root.clear-selection(); }
+            }
+        }
+    }
+
+    if !root.reader.open && root.selection-count <= 1: VerticalLayout {
+        alignment: center;
+        spacing: 8px;
+        Icon {
+            x: (parent.width - self.width) / 2;
+            icon: Icons.mail-open;
+            color: Theme.text-faint;
+            width: 48px;
+            height: 48px;
+        }
+        Text {
+            text: "Select a message to read it";
+            color: Theme.text-faint;
+            horizontal-alignment: center;
+        }
+    }
+
+    if root.reader.open && root.selection-count <= 1: VerticalLayout {
+        // Toolbar.
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 2px;
+            height: 44px;
+            if root.reader.draft: ToolButton {
+                icon: Icons.edit;
+                label: "Edit draft";
+                tint: Theme.accent;
+                clicked => { root.edit-draft(); }
+            }
+            ToolButton {
+                icon: Icons.reply;
+                label: "Reply";
+                clicked => { root.reply(); }
+            }
+            ToolButton {
+                icon: Icons.reply-all;
+                label: "Reply all";
+                clicked => { root.reply-all(); }
+            }
+            ToolButton {
+                icon: Icons.forward;
+                label: "Forward";
+                clicked => { root.forward(); }
+            }
+            // The message as sent, in WebView2 (the browser elsewhere).
+            ToolButton {
+                icon: Icons.open-external;
+                label: "Original";
+                tint: root.original ? Theme.accent : Theme.text;
+                active: root.original;
+                clicked => { root.toggle-original(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: Icons.archive;
+                tooltip: "Archive";
+                clicked => { root.archive(); }
+            }
+            IconButton {
+                icon: Icons.move;
+                tooltip: "Move to folder";
+                clicked => { root.move(); }
+            }
+            IconButton {
+                icon: Icons.delete;
+                tooltip: "Delete (Del)";
+                clicked => { root.delete(); }
+            }
+            IconButton {
+                icon: root.reader.flagged ? Icons.flag : Icons.flag-outline;
+                tooltip: root.reader.flagged ? "Clear flag" : "Flag";
+                tint: root.reader.flagged ? Theme.flag : Theme.text-muted;
+                clicked => { root.toggle-flag(); }
+            }
+            IconButton {
+                icon: root.reader.unread ? Icons.mail-open : Icons.mail;
+                tooltip: root.reader.unread ? "Mark as read (Ctrl+Q)" : "Mark as unread (Ctrl+U)";
+                clicked => { root.toggle-read(); }
+            }
+            IconButton {
+                icon: Icons.select-text;
+                tooltip: "Select text to copy";
+                active: root.select-text;
+                clicked => { root.toggle-select-text(); }
+            }
+
+        }
+        Divider { }
+        // Header.
+        VerticalLayout {
+            vertical-stretch: 0;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 14px;
+            padding-bottom: 10px;
+            spacing: 10px;
+            Text {
+                text: root.reader.subject == "" ? "(no subject)" : root.reader.subject;
+                font-size: 20px;
+                font-weight: 600;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                Avatar {
+                    initials: root.reader.initials;
+                    size: 40px;
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.reader.sender;
+                            font-weight: 600;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: "<" + root.reader.sender-address + ">";
+                            color: Theme.text-muted;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: root.reader.date;
+                            color: Theme.text-muted;
+                            font-size: Theme.small;
+                        }
+                    }
+                    Text {
+                        text: "To: " + root.reader.to;
+                        color: Theme.text-muted;
+                        font-size: Theme.small + 1px;
+                        overflow: elide;
+                    }
+                    if root.reader.cc != "": Text {
+                        text: "Cc: " + root.reader.cc;
+                        color: Theme.text-muted;
+                        font-size: Theme.small + 1px;
+                        overflow: elide;
+                    }
+                    if root.reader.categories != "": Text {
+                        text: root.reader.categories;
+                        color: Theme.accent;
+                        font-size: Theme.small;
+                    }
+                }
+            }
+            if root.reader.remote-images && !root.reader.images-shown: Rectangle {
+                height: 32px;
+                border-radius: Theme.radius;
+                background: Theme.surface-alt;
+                border-width: 1px;
+                border-color: Theme.divider;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 8px;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        icon: Icons.image;
+                        width: 16px;
+                        height: 16px;
+                    }
+                    Text {
+                        text: "Pictures from the internet were blocked to protect your privacy.";
+                        color: Theme.text-muted;
+                        font-size: Theme.small + 1px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        label: "Show pictures";
+                        tint: Theme.accent;
+                        clicked => { root.show-images(); }
+                    }
+                }
+            }
+            if root.attachments.length > 0: Flickable {
+                height: 40px;
+                content-width: chips.preferred-width;
+                chips := HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for attachment in root.attachments: Rectangle {
+                        height: 36px;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        background: chip-touch.has-hover ? Theme.hover : Theme.surface-alt;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 2px;
+                            spacing: 6px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.attach;
+                                width: 16px;
+                                height: 16px;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: attachment.name;
+                                    color: Theme.text;
+                                    font-size: Theme.small + 1px;
+                                    overflow: elide;
+                                    max-width: 220px;
+                                }
+                                Text {
+                                    text: attachment.size;
+                                    color: Theme.text-faint;
+                                    font-size: Theme.small - 1px;
+                                }
+                            }
+                            IconButton {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.download;
+                                tooltip: "Save to Downloads";
+                                size: 28px;
+                                icon-size: 16px;
+                                clicked => { root.save-attachment(attachment.id); }
+                            }
+                        }
+                        chip-touch := TouchArea {
+                            width: parent.width - 30px;
+                            x: 0;
+                            mouse-cursor: pointer;
+                            clicked => { root.open-attachment(attachment.id); }
+                        }
+                    }
+                }
+            }
+        }
+        Divider { }
+        if root.reader.loading: HorizontalLayout {
+            alignment: center;
+            padding: 24px;
+            Spinner {
+                width: 24px;
+                height: 24px;
+                indeterminate: true;
+            }
+        }
+        if root.original && !root.select-text: web-area := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.surface;
+            Text {
+                text: "Loading the original…";
+                color: Theme.text-faint;
+            }
+            property <length> left: self.absolute-position.x;
+            property <length> top: self.absolute-position.y;
+            init => { root.original-area(self.left, self.top, self.width, self.height); }
+            changed left => { root.original-area(self.left, self.top, self.width, self.height); }
+            changed top => { root.original-area(self.left, self.top, self.width, self.height); }
+            changed width => { root.original-area(self.left, self.top, self.width, self.height); }
+            changed height => { root.original-area(self.left, self.top, self.width, self.height); }
+        }
+        if !root.reader.loading && !root.select-text && !root.original: BodyView {
+            blocks: root.blocks;
+            vertical-stretch: 1;
+            link-clicked(link) => { root.link-clicked(link); }
+        }
+        if !root.reader.loading && root.select-text: TextEdit {
+            text: root.reader.plain;
+            read-only: true;
+            wrap: word-wrap;
+            vertical-stretch: 1;
+        }
+        if root.reader.truncated: Text {
+            text: "This message is long; open the original to see all of it.";
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            height: 28px;
+        }
+    }
+}
+
+// A text area for markdown, whose selection the formatting buttons work on.
+component MarkdownEditor inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    // kind, text, anchor, cursor: see editor.rs.
+    callback format(string, string, int, int) -> FormatResult;
+    callback send();
+    property <FormatResult> result;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.divider;
+    background: Theme.surface;
+
+    public function apply(kind: string) {
+        root.result = root.format(kind, input.text, input.anchor-position-byte-offset, input.cursor-position-byte-offset);
+        input.text = root.result.text;
+        input.set-selection-offsets(root.result.anchor, root.result.cursor);
+        input.focus();
+    }
+
+    public function focus-start() {
+        input.focus();
+        input.set-selection-offsets(0, 0);
+    }
+
+    flick := Flickable {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        content-width: self.width;
+        content-height: max(self.height, input.preferred-height + 24px);
+        // Clicks below the text put the cursor at its end.
+        TouchArea {
+            clicked => { input.focus(); }
+        }
+        input := TextInput {
+            x: 12px;
+            y: 12px;
+            width: flick.width - 24px;
+            single-line: false;
+            wrap: word-wrap;
+            color: Theme.text;
+            font-size: Theme.font-size;
+            selection-background-color: Theme.selected-strong;
+            key-pressed(event) => {
+                if (event.modifiers.control && event.text == Key.Return) {
+                    root.send();
+                    return accept;
+                }
+                if (event.modifiers.control && !event.modifiers.shift) {
+                    if (event.text == "b") { root.apply("bold"); return accept; }
+                    if (event.text == "i") { root.apply("italic"); return accept; }
+                    if (event.text == "k") { root.apply("link"); return accept; }
+                }
+                reject
+            }
+            // Keeps the cursor in view while typing.
+            cursor-position-changed(position) => {
+                if (position.y + 40px > -flick.content-y + flick.height) {
+                    flick.content-y = -(position.y + 40px - flick.height);
+                }
+                if (position.y < -flick.content-y) {
+                    flick.content-y = -position.y;
+                }
+            }
+        }
+        if input.text == "": Text {
+            x: 12px;
+            y: 12px;
+            text: root.placeholder;
+            color: Theme.text-faint;
+            font-size: Theme.font-size;
+        }
+    }
+}
+
+export component ComposePane inherits Rectangle {
+    in-out property <Compose> compose;
+    // "Name <address>" of each account, for the From box.
+    in property <[string]> account-labels;
+    in property <[AttachmentRow]> attachments;
+    in property <[string]> suggestions;
+    // Which field the suggestions are for: 0 to, 1 cc, 2 bcc.
+    in property <int> suggestion-field;
+    callback send(Compose);
+    callback discard();
+    callback save-draft(Compose);
+    callback attach();
+    callback remove-attachment(string);
+    callback address-typed(int, string);
+    callback suggestion-picked(int, string, string) -> string;
+    callback format(string, string, int, int) -> FormatResult;
+    // Fills preview-blocks from the markdown.
+    callback preview(string);
+    in property <[BodyBlock]> preview-blocks;
+    background: Theme.surface;
+
+    in property <int> focus-request;
+    changed focus-request => { root.focus-first(); }
+    init => { root.focus-first(); }
+    // New messages start at the recipients, replies at the text.
+    function focus-first() {
+        if (root.compose.kind == 0 || root.compose.kind == 3) {
+            to-field.focus-input();
+        } else {
+            body.focus-start();
+        }
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 4px;
+            height: 44px;
+            ToolButton {
+                icon: Icons.send;
+                label: root.compose.sending ? "Sending…" : "Send";
+                primary: true;
+                enabled: !root.compose.sending;
+                clicked => {
+                    root.send(root.compose);
+                }
+            }
+            ToolButton {
+                icon: Icons.attach;
+                label: "Attach";
+                clicked => { root.attach(); }
+            }
+            ToolButton {
+                icon: Icons.important;
+                label: "Important";
+                tint: root.compose.important ? Theme.danger : Theme.text;
+                clicked => { root.compose.important = !root.compose.important; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            ToolButton {
+                label: "Save draft";
+                enabled: !root.compose.sending;
+                clicked => { root.save-draft(root.compose); }
+            }
+            ToolButton {
+                icon: Icons.delete;
+                label: "Discard";
+                clicked => { root.discard(); }
+            }
+        }
+        Divider { }
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 6px;
+            spacing: 0px;
+            if root.account-labels.length > 1: HorizontalLayout {
+                height: 40px;
+                spacing: 8px;
+                Text {
+                    width: 64px;
+                    text: "From";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    y: (parent.height - self.height) / 2;
+                    model: root.account-labels;
+                    current-index <=> root.compose.account-index;
+                }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                to-field := Field {
+                    label: "To";
+                    text <=> root.compose.to;
+                    placeholder: "Names or addresses, separated by ;";
+                    edited(text) => { root.address-typed(0, text); }
+                }
+                if !root.compose.show-cc: ToolButton {
+                    y: (parent.height - self.height) / 2;
+                    label: "Cc / Bcc";
+                    tint: Theme.text-muted;
+                    clicked => { root.compose.show-cc = true; }
+                }
+            }
+            if root.suggestion-field == 0 && root.suggestions.length > 0: suggestions-list := VerticalLayout {
+                for suggestion in root.suggestions: Rectangle {
+                    height: 30px;
+                    background: suggestion-touch.has-hover ? Theme.hover : Theme.surface-alt;
+                    Text {
+                        x: 72px;
+                        text: suggestion;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    suggestion-touch := TouchArea {
+                        clicked => { root.compose.to = root.suggestion-picked(0, root.compose.to, suggestion); }
+                    }
+                }
+            }
+            if root.compose.show-cc: Field {
+                label: "Cc";
+                text <=> root.compose.cc;
+                edited(text) => { root.address-typed(1, text); }
+            }
+            if root.compose.show-cc && root.suggestion-field == 1 && root.suggestions.length > 0: VerticalLayout {
+                for suggestion in root.suggestions: Rectangle {
+                    height: 30px;
+                    background: cc-touch.has-hover ? Theme.hover : Theme.surface-alt;
+                    Text {
+                        x: 72px;
+                        text: suggestion;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    cc-touch := TouchArea {
+                        clicked => { root.compose.cc = root.suggestion-picked(1, root.compose.cc, suggestion); }
+                    }
+                }
+            }
+            if root.compose.show-cc: Field {
+                label: "Bcc";
+                text <=> root.compose.bcc;
+                edited(text) => { root.address-typed(2, text); }
+            }
+            if root.compose.show-cc && root.suggestion-field == 2 && root.suggestions.length > 0: VerticalLayout {
+                for suggestion in root.suggestions: Rectangle {
+                    height: 30px;
+                    background: bcc-touch.has-hover ? Theme.hover : Theme.surface-alt;
+                    Text {
+                        x: 72px;
+                        text: suggestion;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    bcc-touch := TouchArea {
+                        clicked => { root.compose.bcc = root.suggestion-picked(2, root.compose.bcc, suggestion); }
+                    }
+                }
+            }
+            Field {
+                label: "Subject";
+                text <=> root.compose.subject;
+            }
+            if root.attachments.length > 0: Flickable {
+                height: 40px;
+                content-width: attached.preferred-width;
+                attached := HorizontalLayout {
+                    padding-top: 4px;
+                    spacing: 8px;
+                    alignment: start;
+                    for attachment in root.attachments: Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        background: Theme.surface-alt;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            spacing: 6px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.attach;
+                                width: 14px;
+                                height: 14px;
+                            }
+                            Text {
+                                text: attachment.name + "  " + attachment.size;
+                                color: Theme.text;
+                                font-size: Theme.small + 1px;
+                                vertical-alignment: center;
+                            }
+                            IconButton {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.close;
+                                tooltip: "Remove";
+                                size: 26px;
+                                icon-size: 14px;
+                                clicked => { root.remove-attachment(attachment.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Formatting.
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 2px;
+            IconButton { icon: Icons.bold; tooltip: "Bold (Ctrl+B)"; enabled: !root.compose.preview; clicked => { body.apply("bold"); } }
+            IconButton { icon: Icons.italic; tooltip: "Italic (Ctrl+I)"; enabled: !root.compose.preview; clicked => { body.apply("italic"); } }
+            IconButton { icon: Icons.strike; tooltip: "Strikethrough"; enabled: !root.compose.preview; clicked => { body.apply("strike"); } }
+            IconButton { icon: Icons.bullets; tooltip: "Bulleted list"; enabled: !root.compose.preview; clicked => { body.apply("bullets"); } }
+            IconButton { icon: Icons.numbers; tooltip: "Numbered list"; enabled: !root.compose.preview; clicked => { body.apply("numbers"); } }
+            IconButton { icon: Icons.quote; tooltip: "Quote"; enabled: !root.compose.preview; clicked => { body.apply("quote"); } }
+            IconButton { icon: Icons.link; tooltip: "Link (Ctrl+K)"; enabled: !root.compose.preview; clicked => { body.apply("link"); } }
+            Rectangle { horizontal-stretch: 1; }
+            ToolButton {
+                icon: Icons.preview;
+                label: "Preview";
+                active: root.compose.preview;
+                tint: root.compose.preview ? Theme.accent : Theme.text;
+                clicked => {
+                    root.compose.preview = !root.compose.preview;
+                    if (root.compose.preview) {
+                        root.preview(root.compose.body);
+                    }
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            body := MarkdownEditor {
+                text <=> root.compose.body;
+                placeholder: "Write your message. **bold**, *italic*, - lists and > quotes work as in markdown.";
+                format(kind, text, anchor, cursor) => { root.format(kind, text, anchor, cursor) }
+                send => { root.send(root.compose); }
+            }
+            if root.compose.preview: Rectangle {
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.divider;
+                BodyView {
+                    y: 10px;
+                    height: parent.height - 10px;
+                    blocks: root.preview-blocks;
+                }
+            }
+        }
+        if root.compose.quote != "": Rectangle {
+            height: min(180px, quote-text.preferred-height + 20px);
+            background: Theme.surface-alt;
+            clip: true;
+            quote-text := Text {
+                x: 20px;
+                y: 10px;
+                width: parent.width - 40px;
+                text: root.compose.quote;
+                color: Theme.text-muted;
+                font-size: Theme.small + 1px;
+                wrap: word-wrap;
+                vertical-alignment: top;
+            }
+        }
+    }
+
+}

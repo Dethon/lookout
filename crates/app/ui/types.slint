@@ -1,0 +1,258 @@
+// Data the Rust side hands the interface.
+
+export enum Page { mail, calendar, people }
+
+export struct AccountRow {
+    id: string,
+    name: string,
+    email: string,
+    signature: string,
+}
+
+export struct FolderRow {
+    account: string,
+    id: string,
+    name: string,
+    depth: int,
+    unread: int,
+    // A path from Icons.
+    icon: string,
+    // A heading: an account, or Favourites.
+    header: bool,
+    // Has subfolders (or, for an account heading, folders) to show or hide.
+    expandable: bool,
+    expanded: bool,
+    favourite: bool,
+    // Not a folder: the line between the standard folders and the user's own.
+    divider: bool,
+}
+
+export struct MessageRow {
+    account: string,
+    id: string,
+    // Shown above the row when it starts a stretch of time: "Today"…
+    group: string,
+    selected: bool,
+    sender: string,
+    subject: string,
+    preview: string,
+    date: string,
+    unread: bool,
+    flagged: bool,
+    completed: bool,
+    attachment: bool,
+    important: bool,
+    draft: bool,
+}
+
+// One picture of a picture row; sizes are the sender's, scaled to fit.
+export struct Picture {
+    image: image,
+    loaded: bool,
+    alt: string,
+    link: string,
+    x: length,
+    width: length,
+    height: length,
+}
+
+// kind: 0 paragraph, 1 heading, 2 rule, 3 pictures side by side.
+export struct BodyBlock {
+    kind: int,
+    text: styled-text,
+    level: int,
+    indent: int,
+    quote: int,
+    mono: bool,
+    pictures: [Picture],
+    row-width: length,
+    row-height: length,
+}
+
+export struct AttachmentRow {
+    id: string,
+    name: string,
+    size: string,
+}
+
+export struct Reader {
+    open: bool,
+    loading: bool,
+    account: string,
+    id: string,
+    subject: string,
+    sender: string,
+    sender-address: string,
+    initials: string,
+    to: string,
+    cc: string,
+    date: string,
+    flagged: bool,
+    unread: bool,
+    draft: bool,
+    remote-images: bool,
+    images-shown: bool,
+    truncated: bool,
+    plain: string,
+    categories: string,
+}
+
+// kind: 0 new, 1 reply, 2 reply all, 3 forward.
+export struct Compose {
+    open: bool,
+    account-index: int,
+    to: string,
+    cc: string,
+    bcc: string,
+    subject: string,
+    body: string,
+    quote: string,
+    kind: int,
+    sending: bool,
+    show-cc: bool,
+    important: bool,
+    // Shows the message as it will be sent instead of the markdown.
+    preview: bool,
+}
+
+// What a formatting button did: the new text and the selection to make.
+export struct FormatResult {
+    text: string,
+    anchor: int,
+    cursor: int,
+}
+
+export struct DayColumn {
+    weekday: string,
+    day: string,
+    today: bool,
+}
+
+export struct EventBox {
+    account: string,
+    id: string,
+    day: int,
+    // Fractions of the day.
+    top: float,
+    height: float,
+    column: int,
+    columns: int,
+    title: string,
+    time: string,
+    location: string,
+    color: color,
+    tentative: bool,
+    declined: bool,
+    cancelled: bool,
+}
+
+export struct AllDayBox {
+    account: string,
+    id: string,
+    first-day: int,
+    days: int,
+    row: int,
+    title: string,
+    color: color,
+}
+
+export struct MonthEvent {
+    text: string,
+    color: color,
+    all-day: bool,
+}
+
+export struct MonthCell {
+    day: string,
+    in-month: bool,
+    today: bool,
+    events: [MonthEvent],
+    more: int,
+}
+
+export struct EventDetail {
+    open: bool,
+    account: string,
+    id: string,
+    subject: string,
+    when: string,
+    location: string,
+    organizer: string,
+    attendees: string,
+    response: string,
+    can-respond: bool,
+    is-organizer: bool,
+    join-url: string,
+    web-link: string,
+    calendar: string,
+    color: color,
+    cancelled: bool,
+    loading: bool,
+}
+
+export struct CalendarRow {
+    account: string,
+    id: string,
+    name: string,
+    color: color,
+    shown: bool,
+    header: bool,
+}
+
+export struct EventEditor {
+    open: bool,
+    account: string,
+    id: string,
+    calendar-index: int,
+    subject: string,
+    start-date: string,
+    start-time: string,
+    end-date: string,
+    end-time: string,
+    all-day: bool,
+    location: string,
+    attendees: string,
+    body: string,
+    online: bool,
+    busy-index: int,
+    reminder-index: int,
+    saving: bool,
+    error: string,
+}
+
+export struct ContactRow {
+    account: string,
+    id: string,
+    name: string,
+    email: string,
+    initials: string,
+    detail: string,
+}
+
+export struct ContactEditor {
+    open: bool,
+    account-index: int,
+    id: string,
+    given-name: string,
+    surname: string,
+    display-name: string,
+    emails: string,
+    mobile: string,
+    business: string,
+    home: string,
+    company: string,
+    job-title: string,
+    notes: string,
+    saving: bool,
+}
+
+export struct ContactView {
+    shown: bool,
+    account: string,
+    id: string,
+    name: string,
+    initials: string,
+    lines: [string],
+    emails: [string],
+    notes: string,
+}

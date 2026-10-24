@@ -1,0 +1,222 @@
+// The people page: contacts across accounts, a card, and the editor.
+
+import { ListView, TextEdit, ComboBox } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+import { Icon, IconButton, ToolButton, Avatar, Divider, Field, SearchBox, Overlay } from "widgets.slint";
+import { ContactRow, ContactView, ContactEditor } from "types.slint";
+
+export component PeopleView inherits Rectangle {
+    in property <[ContactRow]> contacts;
+    in property <int> selected: -1;
+    in property <ContactView> contact;
+    in-out property <string> filter;
+    callback filter-edited(string);
+    callback select(int);
+    callback new-contact();
+    callback edit-contact();
+    callback delete-contact();
+    callback email(string);
+    background: Theme.surface;
+
+    HorizontalLayout {
+        Rectangle {
+            width: 340px;
+            background: Theme.surface;
+            VerticalLayout {
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    SearchBox {
+                        text <=> root.filter;
+                        placeholder: "Search people";
+                        edited(text) => { root.filter-edited(text); }
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        icon: Icons.add;
+                        tooltip: "New contact";
+                        tint: Theme.accent;
+                        clicked => { root.new-contact(); }
+                    }
+                }
+                Divider { }
+                ListView {
+                    for contact[index] in root.contacts: Rectangle {
+                        height: 56px;
+                        background: index == root.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 18px;
+                            spacing: 10px;
+                            Avatar {
+                                y: (parent.height - self.height) / 2;
+                                initials: contact.initials;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: contact.name;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                }
+                                if contact.detail != "": Text {
+                                    text: contact.detail;
+                                    color: Theme.text-muted;
+                                    font-size: Theme.small;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                        touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.select(index); }
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            width: 1px;
+            background: Theme.divider;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.surface;
+            if !root.contact.shown: Text {
+                text: "Select a person to see their details";
+                color: Theme.text-faint;
+            }
+            if root.contact.shown: VerticalLayout {
+                padding: 28px;
+                spacing: 12px;
+                alignment: start;
+                HorizontalLayout {
+                    spacing: 16px;
+                    Avatar {
+                        initials: root.contact.initials;
+                        size: 72px;
+                    }
+                    Text {
+                        text: root.contact.name;
+                        font-size: 24px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    IconButton {
+                        icon: Icons.edit;
+                        tooltip: "Edit";
+                        clicked => { root.edit-contact(); }
+                    }
+                    IconButton {
+                        icon: Icons.delete;
+                        tooltip: "Delete";
+                        clicked => { root.delete-contact(); }
+                    }
+                }
+                for address in root.contact.emails: HorizontalLayout {
+                    spacing: 8px;
+                    Icon {
+                        icon: Icons.mail;
+                        width: 16px;
+                        height: 16px;
+                    }
+                    Text {
+                        text: address;
+                        color: Theme.link;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.email(address); }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                for line in root.contact.lines: Text {
+                    text: line;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if root.contact.notes != "": Text {
+                    text: root.contact.notes;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+export component ContactEditorDialog inherits Overlay {
+    in-out property <ContactEditor> editor;
+    in property <[string]> account-labels;
+    callback save(ContactEditor);
+    callback cancel();
+    card-width: 520px;
+    dismissed => { root.cancel(); }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 4px;
+        HorizontalLayout {
+            Text {
+                text: root.editor.id == "" ? "New contact" : "Edit contact";
+                font-size: 18px;
+                font-weight: 600;
+                color: Theme.text;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: Icons.close;
+                tooltip: "Close";
+                clicked => { root.cancel(); }
+            }
+        }
+        if root.editor.id == "" && root.account-labels.length > 1: HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            Text {
+                width: 96px;
+                text: "Account";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                y: (parent.height - self.height) / 2;
+                model: root.account-labels;
+                current-index <=> root.editor.account-index;
+            }
+        }
+        Field { label: "First name"; label-width: 96px; text <=> root.editor.given-name; }
+        Field { label: "Last name"; label-width: 96px; text <=> root.editor.surname; }
+        Field { label: "Display as"; label-width: 96px; text <=> root.editor.display-name; placeholder: "First and last name"; }
+        Field { label: "Email"; label-width: 96px; text <=> root.editor.emails; placeholder: "Addresses, separated by ;"; }
+        Field { label: "Mobile"; label-width: 96px; text <=> root.editor.mobile; }
+        Field { label: "Work phone"; label-width: 96px; text <=> root.editor.business; }
+        Field { label: "Home phone"; label-width: 96px; text <=> root.editor.home; }
+        Field { label: "Company"; label-width: 96px; text <=> root.editor.company; }
+        Field { label: "Job title"; label-width: 96px; text <=> root.editor.job-title; }
+        TextEdit {
+            height: 80px;
+            text <=> root.editor.notes;
+            wrap: word-wrap;
+            placeholder-text: "Notes";
+        }
+        HorizontalLayout {
+            padding-top: 8px;
+            alignment: end;
+            spacing: 8px;
+            ToolButton {
+                label: "Cancel";
+                clicked => { root.cancel(); }
+            }
+            ToolButton {
+                label: root.editor.saving ? "Saving…" : "Save";
+                primary: true;
+                enabled: !root.editor.saving;
+                clicked => { root.save(root.editor); }
+            }
+        }
+    }
+}

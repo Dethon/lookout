@@ -1,0 +1,43 @@
+[package]
+name = "lookout-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22"
+dirs = "6"
+html5gum = "0.8"
+open = "5"
+# The version Slint already builds: what is typed in the composer is markdown.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+log = "0.4"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+iana-time-zone = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+url = "2"
+
+# SChannel on Windows (no C toolchain needed to cross-compile), rustls elsewhere (no OpenSSL).
+# Windows ships SQLite as winsqlite3.dll: nothing to compile, so no C
+# toolchain is needed to cross-compile (see build.rs). Elsewhere it is built in.
+[target.'cfg(windows)'.dependencies]
+rusqlite = "0.37"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "gzip"] }
+
+[target.'cfg(not(windows))'.dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+keyring = "4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip"] }
+
+[build-dependencies]
+implib = { version = "0.6", default-features = false, features = ["msvc"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }

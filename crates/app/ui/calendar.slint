@@ -1,0 +1,653 @@
+// The calendar page: a day, week or month, and the event dialogs.
+
+import { ListView, TextEdit, ComboBox, CheckBox, LineEdit, Spinner } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+import { Icon, IconButton, ToolButton, Divider, VDivider, Field, Overlay } from "widgets.slint";
+import { DayColumn, EventBox, AllDayBox, MonthCell, EventDetail, CalendarRow, EventEditor } from "types.slint";
+
+export component CalendarSidebar inherits Rectangle {
+    in property <[CalendarRow]> calendars;
+    callback new-event();
+    callback toggle-calendar(string, string, bool);
+    background: Theme.background;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+        ToolButton {
+            icon: Icons.add;
+            label: "New event";
+            primary: true;
+            clicked => { root.new-event(); }
+        }
+        ListView {
+            for calendar in root.calendars: Rectangle {
+                height: calendar.header ? 34px : 32px;
+                border-radius: Theme.radius;
+                background: touch.has-hover && !calendar.header ? Theme.hover : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    if !calendar.header: Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 3px;
+                        border-width: 2px;
+                        border-color: calendar.color;
+                        background: calendar.shown ? calendar.color : transparent;
+                    }
+                    Text {
+                        text: calendar.name;
+                        color: calendar.header ? Theme.text-muted : Theme.text;
+                        font-size: calendar.header ? Theme.small : Theme.font-size;
+                        font-weight: calendar.header ? 600 : 400;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                touch := TouchArea {
+                    enabled: !calendar.header;
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle-calendar(calendar.account, calendar.id, !calendar.shown); }
+                }
+            }
+        }
+    }
+}
+
+export component CalendarView inherits Rectangle {
+    in property <string> title;
+    // 0 day, 1 work week, 2 week, 3 month.
+    in property <int> mode: 2;
+    in property <[DayColumn]> days;
+    in property <[EventBox]> events;
+    in property <[AllDayBox]> all-day;
+    in property <int> all-day-rows;
+    in property <[MonthCell]> month;
+    in property <float> now-fraction: -1;
+    in property <int> now-day: -1;
+    in property <bool> busy;
+    callback today();
+    callback previous();
+    callback next();
+    callback set-mode(int);
+    callback open-event(string, string);
+    callback new-event-at(int, int);
+    callback open-day(int);
+    background: Theme.surface;
+
+    property <length> hour-height: 48px;
+    property <length> gutter: 56px;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 8px;
+            spacing: 4px;
+            height: 48px;
+            ToolButton {
+                icon: Icons.calendar;
+                label: "Today";
+                clicked => { root.today(); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.left;
+                tooltip: "Previous";
+                clicked => { root.previous(); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.right;
+                tooltip: "Next";
+                clicked => { root.next(); }
+            }
+            Text {
+                text: root.title;
+                font-size: 18px;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if root.busy: Spinner {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                indeterminate: true;
+            }
+            for label[index] in ["Day", "Work week", "Week", "Month"]: ToolButton {
+                label: label;
+                tint: index == root.mode ? Theme.accent : Theme.text-muted;
+                clicked => { root.set-mode(index); }
+            }
+        }
+        Divider { }
+
+        if root.mode != 3: VerticalLayout {
+            // Day headings.
+            HorizontalLayout {
+                height: 44px;
+                padding-left: root.gutter;
+                for day[index] in root.days: Rectangle {
+                    VerticalLayout {
+                        padding-left: 8px;
+                        alignment: center;
+                        Text {
+                            text: day.weekday;
+                            color: day.today ? Theme.accent : Theme.text-muted;
+                            font-size: Theme.small;
+                        }
+                        Text {
+                            text: day.day;
+                            color: day.today ? Theme.accent : Theme.text;
+                            font-size: 18px;
+                            font-weight: day.today ? 700 : 400;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-day(index); }
+                    }
+                }
+            }
+            // All-day events.
+            if root.all-day-rows > 0: Rectangle {
+                height: root.all-day-rows * 24px + 4px;
+                property <length> column-width: (self.width - root.gutter) / max(1, root.days.length);
+                for event in root.all-day: Rectangle {
+                    x: root.gutter + event.first-day * column-width + 2px;
+                    y: event.row * 24px + 2px;
+                    width: event.days * column-width - 4px;
+                    height: 22px;
+                    border-radius: 4px;
+                    background: event.color.with-alpha(0.25);
+                    Text {
+                        x: 6px;
+                        width: parent.width - 8px;
+                        text: event.title;
+                        color: Theme.text;
+                        font-size: Theme.small;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-event(event.account, event.id); }
+                    }
+                }
+            }
+            Divider { }
+            grid := Flickable {
+                vertical-stretch: 1;
+                content-height: 24 * root.hour-height;
+                property <length> column-width: (self.width - root.gutter) / max(1, root.days.length);
+                init => {
+                    // Start the morning in view.
+                    self.content-y = -7.5 * root.hour-height;
+                }
+                // Hour lines and labels.
+                for hour in 24: Rectangle {
+                    y: hour * root.hour-height;
+                    height: root.hour-height;
+                    Divider {
+                        x: root.gutter;
+                        y: 0;
+                        width: parent.width - root.gutter;
+                    }
+                    Text {
+                        x: 0;
+                        y: 2px;
+                        width: root.gutter - 8px;
+                        text: (hour < 10 ? "0" : "") + hour + ":00";
+                        color: Theme.text-faint;
+                        font-size: Theme.small - 1px;
+                        horizontal-alignment: right;
+                    }
+                }
+                for day in root.days.length: VDivider {
+                    x: root.gutter + day * column-width;
+                    height: 24 * root.hour-height;
+                }
+                // New event on click in an empty slot.
+                TouchArea {
+                    x: root.gutter;
+                    width: parent.content-width - root.gutter;
+                    height: 24 * root.hour-height;
+                    double-clicked => {
+                        root.new-event-at(
+                            floor((self.mouse-x) / column-width),
+                            floor(self.mouse-y / (root.hour-height / 2)));
+                    }
+                }
+                if root.now-day >= 0: Rectangle {
+                    x: root.gutter + root.now-day * column-width;
+                    y: root.now-fraction * 24 * root.hour-height;
+                    width: column-width;
+                    height: 2px;
+                    background: Theme.danger;
+                }
+                for event in root.events: Rectangle {
+                    x: root.gutter + event.day * column-width + event.column * (column-width - 6px) / event.columns + 1px;
+                    y: event.top * 24 * root.hour-height + 1px;
+                    width: (column-width - 6px) / event.columns - 2px;
+                    height: max(20px, event.height * 24 * root.hour-height - 2px);
+                    border-radius: 4px;
+                    clip: true;
+                    background: event.declined || event.cancelled ? Theme.surface-alt : event.color.with-alpha(event.tentative ? 0.12 : 0.22);
+                    border-width: event.tentative ? 1px : 0px;
+                    border-color: event.color;
+                    Rectangle {
+                        x: 0;
+                        width: 3px;
+                        background: event.color;
+                    }
+                    VerticalLayout {
+                        padding-left: 7px;
+                        padding-right: 4px;
+                        padding-top: 2px;
+                        alignment: start;
+                        Text {
+                            text: event.title;
+                            color: Theme.text;
+                            font-size: Theme.small;
+                            font-weight: 600;
+                            overflow: elide;
+                            wrap: word-wrap;
+                            max-height: parent.height - 4px;
+                        }
+                        if event.height * 24 * root.hour-height > 36px: Text {
+                            text: event.time + (event.location != "" ? " · " + event.location : "");
+                            color: Theme.text-muted;
+                            font-size: Theme.small - 1px;
+                            overflow: elide;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-event(event.account, event.id); }
+                    }
+                }
+            }
+        }
+
+        if root.mode == 3: VerticalLayout {
+            HorizontalLayout {
+                height: 28px;
+                for name in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: Text {
+                    text: name;
+                    color: Theme.text-muted;
+                    font-size: Theme.small;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Divider { }
+            Rectangle {
+                vertical-stretch: 1;
+                property <length> cell-width: self.width / 7;
+                property <length> cell-height: self.height / 6;
+                for cell[index] in root.month: Rectangle {
+                    x: mod(index, 7) * cell-width;
+                    y: floor(index / 7) * cell-height;
+                    width: cell-width;
+                    height: cell-height;
+                    background: cell.in-month ? transparent : Theme.surface-alt;
+                    border-width: 0.5px;
+                    border-color: Theme.divider;
+                    VerticalLayout {
+                        padding: 4px;
+                        spacing: 2px;
+                        alignment: start;
+                        Text {
+                            text: cell.day;
+                            color: cell.today ? Theme.accent : cell.in-month ? Theme.text : Theme.text-faint;
+                            font-weight: cell.today ? 700 : 400;
+                            font-size: Theme.small + 1px;
+                        }
+                        for event in cell.events: Rectangle {
+                            height: 18px;
+                            border-radius: 3px;
+                            background: event.all-day ? event.color.with-alpha(0.25) : transparent;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                spacing: 5px;
+                                if !event.all-day: Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    width: 7px;
+                                    height: 7px;
+                                    border-radius: 3.5px;
+                                    background: event.color;
+                                }
+                                Text {
+                                    text: event.text;
+                                    color: Theme.text;
+                                    font-size: Theme.small - 1px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                        if cell.more > 0: Text {
+                            text: "+" + cell.more + " more";
+                            color: Theme.accent;
+                            font-size: Theme.small - 1px;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-day(index); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component EventDetailDialog inherits Overlay {
+    in property <EventDetail> detail;
+    callback close();
+    callback respond(int);
+    callback edit();
+    callback delete();
+    callback join();
+    callback open-in-browser();
+    card-width: 460px;
+    dismissed => { root.close(); }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            Rectangle {
+                width: 6px;
+                border-radius: 3px;
+                background: root.detail.color;
+            }
+            Text {
+                text: root.detail.subject == "" ? "(no title)" : root.detail.subject;
+                font-size: 18px;
+                font-weight: 600;
+                color: Theme.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                opacity: root.detail.cancelled ? 0.6 : 1;
+            }
+            IconButton {
+                icon: Icons.close;
+                tooltip: "Close";
+                clicked => { root.close(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Icon {
+                icon: Icons.clock;
+                width: 16px;
+                height: 16px;
+            }
+            Text {
+                text: root.detail.when;
+                color: Theme.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.detail.location != "": HorizontalLayout {
+            spacing: 8px;
+            Icon {
+                icon: Icons.place;
+                width: 16px;
+                height: 16px;
+            }
+            Text {
+                text: root.detail.location;
+                color: Theme.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Icon {
+                icon: Icons.calendar;
+                width: 16px;
+                height: 16px;
+            }
+            Text {
+                text: root.detail.calendar;
+                color: Theme.text-muted;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.detail.organizer != "": HorizontalLayout {
+            spacing: 8px;
+            Icon {
+                icon: Icons.person;
+                width: 16px;
+                height: 16px;
+            }
+            Text {
+                text: root.detail.organizer;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.detail.attendees != "": Text {
+            text: root.detail.attendees;
+            color: Theme.text-muted;
+            font-size: Theme.small + 1px;
+            wrap: word-wrap;
+        }
+        if root.detail.response != "": Text {
+            text: root.detail.response;
+            color: Theme.accent;
+            font-size: Theme.small + 1px;
+        }
+        if root.detail.join-url != "": ToolButton {
+            icon: Icons.video;
+            label: "Join online meeting";
+            primary: true;
+            clicked => { root.join(); }
+        }
+        Divider { }
+        HorizontalLayout {
+            spacing: 4px;
+            if root.detail.can-respond: ToolButton {
+                icon: Icons.check;
+                label: "Accept";
+                clicked => { root.respond(0); }
+            }
+            if root.detail.can-respond: ToolButton {
+                label: "Tentative";
+                clicked => { root.respond(1); }
+            }
+            if root.detail.can-respond: ToolButton {
+                icon: Icons.close;
+                label: "Decline";
+                clicked => { root.respond(2); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.detail.web-link != "": IconButton {
+                icon: Icons.open-external;
+                tooltip: "Open in Outlook on the web";
+                clicked => { root.open-in-browser(); }
+            }
+            if root.detail.is-organizer: IconButton {
+                icon: Icons.edit;
+                tooltip: "Edit";
+                clicked => { root.edit(); }
+            }
+            IconButton {
+                icon: Icons.delete;
+                tooltip: "Delete";
+                clicked => { root.delete(); }
+            }
+        }
+    }
+}
+
+export component EventEditorDialog inherits Overlay {
+    in-out property <EventEditor> editor;
+    in property <[string]> calendar-labels;
+    callback save(EventEditor);
+    callback cancel();
+    callback attendee-typed(string);
+    card-width: 560px;
+    dismissed => { root.cancel(); }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 6px;
+        HorizontalLayout {
+            Text {
+                text: root.editor.id == "" ? "New event" : "Edit event";
+                font-size: 18px;
+                font-weight: 600;
+                color: Theme.text;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: Icons.close;
+                tooltip: "Close";
+                clicked => { root.cancel(); }
+            }
+        }
+        Field {
+            label: "Title";
+            label-width: 80px;
+            text <=> root.editor.subject;
+            placeholder: "Add a title";
+        }
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            Text {
+                width: 80px;
+                text: "Calendar";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                y: (parent.height - self.height) / 2;
+                enabled: root.editor.id == "";
+                model: root.calendar-labels;
+                current-index <=> root.editor.calendar-index;
+            }
+        }
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            Text {
+                width: 80px;
+                text: "Starts";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            LineEdit {
+                width: 130px;
+                text <=> root.editor.start-date;
+                placeholder-text: "YYYY-MM-DD";
+            }
+            if !root.editor.all-day: LineEdit {
+                width: 80px;
+                text <=> root.editor.start-time;
+                placeholder-text: "HH:MM";
+            }
+            CheckBox {
+                text: "All day";
+                checked <=> root.editor.all-day;
+            }
+        }
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            Text {
+                width: 80px;
+                text: "Ends";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            LineEdit {
+                width: 130px;
+                text <=> root.editor.end-date;
+                placeholder-text: "YYYY-MM-DD";
+            }
+            if !root.editor.all-day: LineEdit {
+                width: 80px;
+                text <=> root.editor.end-time;
+                placeholder-text: "HH:MM";
+            }
+            Rectangle { }
+        }
+        Field {
+            label: "Location";
+            label-width: 80px;
+            text <=> root.editor.location;
+        }
+        Field {
+            label: "Attendees";
+            label-width: 80px;
+            text <=> root.editor.attendees;
+            placeholder: "Addresses, separated by ;";
+        }
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            Text {
+                width: 80px;
+                text: "Show as";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                y: (parent.height - self.height) / 2;
+                model: ["Busy", "Tentative", "Free", "Away"];
+                current-index <=> root.editor.busy-index;
+            }
+            Text {
+                text: "Reminder";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                y: (parent.height - self.height) / 2;
+                model: ["None", "5 minutes", "15 minutes", "30 minutes", "1 hour", "1 day"];
+                current-index <=> root.editor.reminder-index;
+            }
+        }
+        CheckBox {
+            text: "Online meeting (Teams)";
+            checked <=> root.editor.online;
+        }
+        TextEdit {
+            height: 120px;
+            text <=> root.editor.body;
+            wrap: word-wrap;
+            placeholder-text: "Description";
+        }
+        if root.editor.error != "": Text {
+            text: root.editor.error;
+            color: Theme.danger;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            ToolButton {
+                label: "Cancel";
+                clicked => { root.cancel(); }
+            }
+            ToolButton {
+                label: root.editor.saving ? "Saving…" : "Save";
+                primary: true;
+                enabled: !root.editor.saving;
+                clicked => { root.save(root.editor); }
+            }
+        }
+    }
+}

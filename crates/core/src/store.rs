@@ -1,0 +1,1005 @@
+//! The local cache: one SQLite file for every account.
+//!
+//! The engine writes through one connection; the interface reads through its
+//! own, which WAL lets run alongside. Message bodies are only kept for
+//! messages that were opened, and the oldest are dropped past a size cap.
+
+use std::path::Path;
+
+use rusqlite::{Connection, OptionalExtension, Row, params};
+
+use crate::Result;
+use crate::auth::Account;
+use crate::model::{
+    Address, Attachment, Attendee, Calendar, Contact, Event, Flag, Folder, MessageDetail,
+    MessageSummary, Phone, Response,
+};
+
+const SCHEMA_VERSION: i64 = 1;
+// SQLite's page cache per connection, in KiB (negative means KiB).
+const CACHE_KIB: i64 = -2048;
+// Bodies kept for messages opened earlier; the least recently opened go first.
+const BODY_CAP_BYTES: i64 = 64 * 1024 * 1024;
+
+const SCHEMA: &str = r#"
+CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE folders (
+    account TEXT NOT NULL,
+    id TEXT NOT NULL,
+    parent_id TEXT,
+    name TEXT NOT NULL,
+    well_known TEXT,
+    unread INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, id)
+);
+CREATE TABLE messages (
+    account TEXT NOT NULL,
+    id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    from_name TEXT NOT NULL DEFAULT '',
+    from_address TEXT NOT NULL DEFAULT '',
+    to_json TEXT NOT NULL DEFAULT '[]',
+    cc_json TEXT NOT NULL DEFAULT '[]',
+    reply_to_json TEXT NOT NULL DEFAULT '[]',
+    preview TEXT NOT NULL DEFAULT '',
+    received INTEGER NOT NULL DEFAULT 0,
+    sent INTEGER NOT NULL DEFAULT 0,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    is_draft INTEGER NOT NULL DEFAULT 0,
+    flag INTEGER NOT NULL DEFAULT 0,
+    high_importance INTEGER NOT NULL DEFAULT 0,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    categories TEXT NOT NULL DEFAULT '',
+    body_html TEXT,
+    body_text TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT,
+    opened INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (account, id)
+);
+CREATE INDEX messages_by_folder ON messages (account, folder_id, received DESC);
+CREATE INDEX messages_opened ON messages (opened) WHERE body_html IS NOT NULL;
+CREATE VIRTUAL TABLE messages_fts USING fts5 (
+    subject, from_name, from_address, preview, body_text,
+    content = 'messages', content_rowid = 'rowid',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, subject, from_name, from_address, preview, body_text)
+    VALUES (new.rowid, new.subject, new.from_name, new.from_address, new.preview, new.body_text);
+END;
+CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, subject, from_name, from_address, preview, body_text)
+    VALUES ('delete', old.rowid, old.subject, old.from_name, old.from_address, old.preview, old.body_text);
+END;
+CREATE TRIGGER messages_au AFTER UPDATE OF subject, from_name, from_address, preview, body_text ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, subject, from_name, from_address, preview, body_text)
+    VALUES ('delete', old.rowid, old.subject, old.from_name, old.from_address, old.preview, old.body_text);
+    INSERT INTO messages_fts (rowid, subject, from_name, from_address, preview, body_text)
+    VALUES (new.rowid, new.subject, new.from_name, new.from_address, new.preview, new.body_text);
+END;
+CREATE TABLE sync_state (
+    account TEXT NOT NULL,
+    key TEXT NOT NULL,
+    link TEXT NOT NULL,
+    PRIMARY KEY (account, key)
+);
+CREATE TABLE calendars (
+    account TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '',
+    can_edit INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    shown INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (account, id)
+);
+CREATE TABLE events (
+    account TEXT NOT NULL,
+    id TEXT NOT NULL,
+    calendar_id TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    start INTEGER NOT NULL,
+    end INTEGER NOT NULL,
+    all_day INTEGER NOT NULL DEFAULT 0,
+    location TEXT NOT NULL DEFAULT '',
+    organizer_json TEXT NOT NULL DEFAULT '{}',
+    attendees_json TEXT NOT NULL DEFAULT '[]',
+    preview TEXT NOT NULL DEFAULT '',
+    body_html TEXT NOT NULL DEFAULT '',
+    response TEXT NOT NULL DEFAULT 'none',
+    show_as TEXT NOT NULL DEFAULT 'busy',
+    is_cancelled INTEGER NOT NULL DEFAULT 0,
+    is_online INTEGER NOT NULL DEFAULT 0,
+    join_url TEXT NOT NULL DEFAULT '',
+    is_recurring INTEGER NOT NULL DEFAULT 0,
+    web_link TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account, id)
+);
+CREATE INDEX events_by_time ON events (start, end);
+CREATE TABLE contacts (
+    account TEXT NOT NULL,
+    id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    given_name TEXT NOT NULL DEFAULT '',
+    surname TEXT NOT NULL DEFAULT '',
+    emails_json TEXT NOT NULL DEFAULT '[]',
+    phones_json TEXT NOT NULL DEFAULT '[]',
+    company TEXT NOT NULL DEFAULT '',
+    job_title TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account, id)
+);
+"#;
+
+pub struct Store {
+    db: Connection,
+}
+
+/// A row's place in the cache: what the message list keeps per message.
+pub type RowId = i64;
+
+const SUMMARY_COLUMNS: &str = "account, id, folder_id, conversation_id, subject, from_name, \
+    from_address, to_json, preview, received, is_read, is_draft, flag, high_importance, has_attachments";
+
+fn summary_from(row: &Row) -> rusqlite::Result<MessageSummary> {
+    Ok(MessageSummary {
+        account: row.get(0)?,
+        id: row.get(1)?,
+        folder_id: row.get(2)?,
+        conversation_id: row.get(3)?,
+        subject: row.get(4)?,
+        from: Address { name: row.get(5)?, address: row.get(6)? },
+        to: json_or_default(&row.get::<_, String>(7)?),
+        preview: row.get(8)?,
+        received: row.get(9)?,
+        is_read: row.get(10)?,
+        is_draft: row.get(11)?,
+        flag: Flag::from_i64(row.get(12)?),
+        high_importance: row.get(13)?,
+        has_attachments: row.get(14)?,
+    })
+}
+
+fn json_or_default<T: serde::de::DeserializeOwned + Default>(text: &str) -> T {
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+fn to_json<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+/// A message as written by the sync: everything but the body.
+#[derive(Debug, Clone)]
+pub struct MessageRecord {
+    pub summary: MessageSummary,
+    pub cc: Vec<Address>,
+    pub reply_to: Vec<Address>,
+    pub sent: i64,
+    pub categories: Vec<String>,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let db = Connection::open(path)?;
+        Self::prepare(db)
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        Self::prepare(Connection::open_in_memory()?)
+    }
+
+    fn prepare(db: Connection) -> Result<Self> {
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        db.pragma_update(None, "foreign_keys", "OFF")?;
+        db.pragma_update(None, "cache_size", CACHE_KIB)?;
+        db.pragma_update(None, "temp_store", "MEMORY")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version == 0 {
+            db.execute_batch(SCHEMA)?;
+            db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+        Ok(Self { db })
+    }
+
+    /// The cache file in the data folder.
+    pub fn default_path() -> Result<std::path::PathBuf> {
+        Ok(crate::config::data_dir()?.join("cache.sqlite3"))
+    }
+
+    // Accounts
+
+    pub fn accounts(&self) -> Result<Vec<Account>> {
+        let mut statement = self.db.prepare_cached("SELECT id, name, email FROM accounts ORDER BY position, rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok(Account { id: row.get(0)?, name: row.get(1)?, email: row.get(2)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn put_account(&self, account: &Account) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO accounts (id, name, email, position)
+             VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts))
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name, email = excluded.email",
+            params![account.id, account.name, account.email],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets an account and everything cached for it.
+    pub fn remove_account(&mut self, account: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for table in ["accounts", "folders", "messages", "sync_state", "calendars", "events", "contacts"] {
+            let column = if table == "accounts" { "id" } else { "account" };
+            tx.execute(&format!("DELETE FROM {table} WHERE {column} = ?1"), [account])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    // Sync state
+
+    pub fn sync_link(&self, account: &str, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT link FROM sync_state WHERE account = ?1 AND key = ?2",
+                [account, key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_sync_link(&self, account: &str, key: &str, link: Option<&str>) -> Result<()> {
+        match link {
+            Some(link) => self.db.execute(
+                "INSERT INTO sync_state (account, key, link) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (account, key) DO UPDATE SET link = excluded.link",
+                [account, key, link],
+            )?,
+            None => self.db.execute("DELETE FROM sync_state WHERE account = ?1 AND key = ?2", [account, key])?,
+        };
+        Ok(())
+    }
+
+    // Folders
+
+    /// Replaces the account's folder list, in the order given.
+    pub fn put_folders(&mut self, account: &str, folders: &[Folder]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM folders WHERE account = ?1", [account])?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO folders (account, id, parent_id, name, well_known, unread, total, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for (position, folder) in folders.iter().enumerate() {
+                insert.execute(params![
+                    account,
+                    folder.id,
+                    folder.parent_id,
+                    folder.name,
+                    folder.well_known,
+                    folder.unread,
+                    folder.total,
+                    position as i64
+                ])?;
+            }
+        }
+        // Messages of folders that are gone went with them.
+        tx.execute(
+            "DELETE FROM messages WHERE account = ?1 AND folder_id NOT IN (SELECT id FROM folders WHERE account = ?1)",
+            [account],
+        )?;
+        tx.execute(
+            "DELETE FROM sync_state WHERE account = ?1 AND key LIKE 'messages:%'
+             AND substr(key, 10) NOT IN (SELECT id FROM folders WHERE account = ?1)",
+            [account],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn folders(&self, account: &str) -> Result<Vec<Folder>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT id, parent_id, name, well_known, unread, total FROM folders
+             WHERE account = ?1 ORDER BY position",
+        )?;
+        let rows = statement.query_map([account], |row| {
+            Ok(Folder {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                well_known: row.get(3)?,
+                unread: row.get(4)?,
+                total: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn well_known_folder(&self, account: &str, name: &str) -> Result<Option<String>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT id FROM folders WHERE account = ?1 AND well_known = ?2",
+                [account, name],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Recounts a folder's unread messages from the cache, after local changes.
+    pub fn adjust_unread(&self, account: &str, folder: &str, delta: i64) -> Result<()> {
+        self.db.execute(
+            "UPDATE folders SET unread = MAX(0, unread + ?3) WHERE account = ?1 AND id = ?2",
+            params![account, folder, delta],
+        )?;
+        Ok(())
+    }
+
+    // Messages
+
+    /// Adds or updates messages from the server, keeping cached bodies.
+    pub fn put_messages(&mut self, records: &[MessageRecord]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut upsert = tx.prepare_cached(
+                "INSERT INTO messages (account, id, folder_id, conversation_id, subject, from_name,
+                    from_address, to_json, cc_json, reply_to_json, preview, received, sent, is_read,
+                    is_draft, flag, high_importance, has_attachments, categories)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                 ON CONFLICT (account, id) DO UPDATE SET
+                    folder_id = excluded.folder_id, conversation_id = excluded.conversation_id,
+                    subject = excluded.subject, from_name = excluded.from_name,
+                    from_address = excluded.from_address, to_json = excluded.to_json,
+                    cc_json = excluded.cc_json, reply_to_json = excluded.reply_to_json,
+                    preview = excluded.preview, received = excluded.received, sent = excluded.sent,
+                    is_read = excluded.is_read, is_draft = excluded.is_draft, flag = excluded.flag,
+                    high_importance = excluded.high_importance,
+                    has_attachments = excluded.has_attachments, categories = excluded.categories",
+            )?;
+            for record in records {
+                let summary = &record.summary;
+                upsert.execute(params![
+                    summary.account,
+                    summary.id,
+                    summary.folder_id,
+                    summary.conversation_id,
+                    summary.subject,
+                    summary.from.name,
+                    summary.from.address,
+                    to_json(&summary.to),
+                    to_json(&record.cc),
+                    to_json(&record.reply_to),
+                    summary.preview,
+                    summary.received,
+                    record.sent,
+                    summary.is_read,
+                    summary.is_draft,
+                    summary.flag.to_i64(),
+                    summary.high_importance,
+                    summary.has_attachments,
+                    record.categories.join("\u{1f}"),
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_messages(&mut self, account: &str, ids: &[String]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut delete = tx.prepare_cached("DELETE FROM messages WHERE account = ?1 AND id = ?2")?;
+            for id in ids {
+                delete.execute([account, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops a folder's messages, before syncing it again from scratch.
+    pub fn clear_folder(&self, account: &str, folder: &str) -> Result<()> {
+        self.db.execute("DELETE FROM messages WHERE account = ?1 AND folder_id = ?2", [account, folder])?;
+        Ok(())
+    }
+
+    /// The rows of a folder, newest first; only unread ones if asked.
+    pub fn folder_rows(&self, account: &str, folder: &str, unread_only: bool) -> Result<Vec<RowId>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT rowid FROM messages WHERE account = ?1 AND folder_id = ?2 AND (NOT ?3 OR NOT is_read)
+             ORDER BY received DESC",
+        )?;
+        let rows = statement.query_map(params![account, folder, unread_only], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Rows matching a search, newest first, in one account or all of them.
+    /// Every word must match the start of a word in the message.
+    pub fn search_rows(&self, account: Option<&str>, query: &str, limit: usize) -> Result<Vec<RowId>> {
+        let Some(expression) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.db.prepare_cached(
+            "SELECT m.rowid FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+             WHERE messages_fts MATCH ?1 AND (?2 IS NULL OR m.account = ?2)
+             ORDER BY m.received DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![expression, account, limit as i64], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn summary(&self, row: RowId) -> Result<Option<MessageSummary>> {
+        let mut statement =
+            self.db.prepare_cached(&format!("SELECT {SUMMARY_COLUMNS} FROM messages WHERE rowid = ?1"))?;
+        Ok(statement.query_row([row], summary_from).optional()?)
+    }
+
+    pub fn folder_of(&self, account: &str, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .db
+            .query_row("SELECT folder_id FROM messages WHERE account = ?1 AND id = ?2", [account, id], |row| row.get(0))
+            .optional()?)
+    }
+
+    pub fn row_of(&self, account: &str, id: &str) -> Result<Option<RowId>> {
+        Ok(self
+            .db
+            .query_row("SELECT rowid FROM messages WHERE account = ?1 AND id = ?2", [account, id], |row| row.get(0))
+            .optional()?)
+    }
+
+    pub fn message(&self, account: &str, id: &str) -> Result<Option<MessageDetail>> {
+        let mut statement = self.db.prepare_cached(&format!(
+            "SELECT {SUMMARY_COLUMNS}, cc_json, reply_to_json, sent, categories, body_html, attachments_json
+             FROM messages WHERE account = ?1 AND id = ?2"
+        ))?;
+        Ok(statement
+            .query_row([account, id], |row| {
+                let categories: String = row.get(18)?;
+                Ok(MessageDetail {
+                    summary: summary_from(row)?,
+                    cc: json_or_default(&row.get::<_, String>(15)?),
+                    bcc: Vec::new(),
+                    reply_to: json_or_default(&row.get::<_, String>(16)?),
+                    sent: row.get(17)?,
+                    categories: categories.split('\u{1f}').filter(|c| !c.is_empty()).map(str::to_owned).collect(),
+                    body_html: row.get(19)?,
+                    attachments: row
+                        .get::<_, Option<String>>(20)?
+                        .map(|json| json_or_default(&json))
+                        .unwrap_or_default(),
+                })
+            })
+            .optional()?)
+    }
+
+    /// Keeps a fetched body, its text for searching and its attachments.
+    pub fn put_body(
+        &self,
+        account: &str,
+        id: &str,
+        html: &str,
+        text: &str,
+        attachments: &[Attachment],
+    ) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET body_html = ?3, body_text = ?4, attachments_json = ?5, opened = ?6
+             WHERE account = ?1 AND id = ?2",
+            params![account, id, html, text, to_json(&attachments), now()],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a cached body as just read, so it is the last to be dropped.
+    pub fn touch_body(&self, account: &str, id: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET opened = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Drops the least recently opened bodies past the cap. Their text stays
+    /// searchable.
+    pub fn trim_bodies(&self) -> Result<()> {
+        let total: i64 = self.db.query_row(
+            "SELECT COALESCE(SUM(LENGTH(body_html)), 0) FROM messages WHERE body_html IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        if total <= BODY_CAP_BYTES {
+            return Ok(());
+        }
+        let mut excess = total - BODY_CAP_BYTES * 3 / 4;
+        let mut statement = self.db.prepare(
+            "SELECT rowid, LENGTH(body_html) FROM messages WHERE body_html IS NOT NULL ORDER BY opened",
+        )?;
+        let mut drop = Vec::new();
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()?
+            && excess > 0
+        {
+            drop.push(row.get::<_, i64>(0)?);
+            excess -= row.get::<_, i64>(1)?;
+        }
+        for row in drop {
+            self.db.execute("UPDATE messages SET body_html = NULL WHERE rowid = ?1", [row])?;
+        }
+        Ok(())
+    }
+
+    pub fn set_read(&self, account: &str, id: &str, read: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET is_read = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, read],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_flag(&self, account: &str, id: &str, flag: Flag) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET flag = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, flag.to_i64()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_folder(&self, account: &str, id: &str, folder: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET folder_id = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, folder],
+        )?;
+        Ok(())
+    }
+
+    // Calendars
+
+    pub fn put_calendars(&mut self, account: &str, calendars: &[Calendar]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "DELETE FROM calendars WHERE account = ?1 AND id NOT IN (SELECT value FROM json_each(?2))",
+            params![account, to_json(&calendars.iter().map(|c| &c.id).collect::<Vec<_>>())],
+        )?;
+        {
+            let mut upsert = tx.prepare_cached(
+                "INSERT INTO calendars (account, id, name, color, can_edit, is_default)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (account, id) DO UPDATE SET name = excluded.name, color = excluded.color,
+                    can_edit = excluded.can_edit, is_default = excluded.is_default",
+            )?;
+            for calendar in calendars {
+                upsert.execute(params![
+                    account,
+                    calendar.id,
+                    calendar.name,
+                    calendar.color,
+                    calendar.can_edit,
+                    calendar.is_default
+                ])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM events WHERE account = ?1 AND calendar_id NOT IN
+             (SELECT id FROM calendars WHERE account = ?1)",
+            [account],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every account's calendars, with whether each is shown.
+    pub fn calendars(&self) -> Result<Vec<(String, Calendar, bool)>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT c.account, c.id, c.name, c.color, c.can_edit, c.is_default, c.shown
+             FROM calendars c JOIN accounts a ON a.id = c.account
+             ORDER BY a.position, c.is_default DESC, c.name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                Calendar {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    color: row.get(3)?,
+                    can_edit: row.get(4)?,
+                    is_default: row.get(5)?,
+                },
+                row.get(6)?,
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_calendar_shown(&self, account: &str, id: &str, shown: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE calendars SET shown = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, shown],
+        )?;
+        Ok(())
+    }
+
+    pub fn put_events(&mut self, events: &[Event]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut upsert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO events (account, id, calendar_id, subject, start, end, all_day,
+                    location, organizer_json, attendees_json, preview, body_html, response, show_as,
+                    is_cancelled, is_online, join_url, is_recurring, web_link)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            )?;
+            for event in events {
+                upsert.execute(params![
+                    event.account,
+                    event.id,
+                    event.calendar_id,
+                    event.subject,
+                    event.start,
+                    event.end,
+                    event.all_day,
+                    event.location,
+                    to_json(&event.organizer),
+                    to_json(&event.attendees),
+                    event.preview,
+                    event.body_html,
+                    event.response.as_str(),
+                    event.show_as,
+                    event.is_cancelled,
+                    event.is_online,
+                    event.join_url,
+                    event.is_recurring,
+                    event.web_link,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_events(&mut self, account: &str, ids: &[String]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut delete = tx.prepare_cached("DELETE FROM events WHERE account = ?1 AND id = ?2")?;
+            for id in ids {
+                delete.execute([account, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn clear_events(&self, account: &str) -> Result<()> {
+        self.db.execute("DELETE FROM events WHERE account = ?1", [account])?;
+        Ok(())
+    }
+
+    /// Events of shown calendars overlapping `[start, end)`, by start.
+    /// All-day events are compared by their date, which is kept in UTC.
+    pub fn events_between(&self, start: i64, end: i64) -> Result<Vec<Event>> {
+        // An all-day event's stored UTC midnight can be up to 14 hours from
+        // the local midnight it stands for.
+        const ZONE_SLACK: i64 = 14 * 3600;
+        let mut statement = self.db.prepare_cached(
+            "SELECT e.account, e.id, e.calendar_id, e.subject, e.start, e.end, e.all_day, e.location,
+                    e.organizer_json, e.attendees_json, e.preview, e.body_html, e.response, e.show_as,
+                    e.is_cancelled, e.is_online, e.join_url, e.is_recurring, e.web_link
+             FROM events e JOIN calendars c ON c.account = e.account AND c.id = e.calendar_id
+             WHERE c.shown AND e.start < ?2 + ?3 AND e.end > ?1 - ?3
+             ORDER BY e.all_day DESC, e.start",
+        )?;
+        let rows = statement.query_map(params![start, end, ZONE_SLACK], event_from)?;
+        let events: Vec<Event> = rows.collect::<rusqlite::Result<_>>()?;
+        Ok(events
+            .into_iter()
+            .filter(|event| {
+                if event.all_day {
+                    let first = crate::when::local_midnight(crate::when::floating_date(event.start));
+                    let last = crate::when::local_midnight(crate::when::floating_date(event.end));
+                    first < end && last > start
+                } else {
+                    event.start < end && event.end > start
+                }
+            })
+            .collect())
+    }
+
+    /// The ids of a calendar's events overlapping `[start, end)`, shown or not.
+    pub fn event_ids_in(&self, account: &str, calendar: &str, start: i64, end: i64) -> Result<Vec<String>> {
+        // All-day events are kept at UTC midnight; allow for the zone.
+        const ZONE_SLACK: i64 = 14 * 3600;
+        let mut statement = self.db.prepare_cached(
+            "SELECT id FROM events WHERE account = ?1 AND calendar_id = ?2 AND start < ?4 + ?5 AND end > ?3 - ?5",
+        )?;
+        let rows = statement.query_map(params![account, calendar, start, end, ZONE_SLACK], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn event(&self, account: &str, id: &str) -> Result<Option<Event>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT account, id, calendar_id, subject, start, end, all_day, location, organizer_json,
+                    attendees_json, preview, body_html, response, show_as, is_cancelled, is_online,
+                    join_url, is_recurring, web_link
+             FROM events WHERE account = ?1 AND id = ?2",
+        )?;
+        Ok(statement.query_row([account, id], event_from).optional()?)
+    }
+
+    // Contacts
+
+    pub fn put_contacts(&mut self, contacts: &[Contact]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut upsert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO contacts (account, id, display_name, given_name, surname,
+                    emails_json, phones_json, company, job_title, notes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for contact in contacts {
+                upsert.execute(params![
+                    contact.account,
+                    contact.id,
+                    contact.display_name,
+                    contact.given_name,
+                    contact.surname,
+                    to_json(&contact.emails),
+                    to_json(&contact.phones),
+                    contact.company,
+                    contact.job_title,
+                    contact.notes,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_contacts(&mut self, account: &str, ids: &[String]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        {
+            let mut delete = tx.prepare_cached("DELETE FROM contacts WHERE account = ?1 AND id = ?2")?;
+            for id in ids {
+                delete.execute([account, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn clear_contacts(&self, account: &str) -> Result<()> {
+        self.db.execute("DELETE FROM contacts WHERE account = ?1", [account])?;
+        Ok(())
+    }
+
+    /// Every account's contacts by name, or those matching `filter`.
+    pub fn contacts(&self, filter: &str) -> Result<Vec<Contact>> {
+        let pattern = format!("%{}%", filter.trim().replace(['%', '_'], ""));
+        let mut statement = self.db.prepare_cached(
+            "SELECT account, id, display_name, given_name, surname, emails_json, phones_json,
+                    company, job_title, notes
+             FROM contacts
+             WHERE display_name LIKE ?1 OR emails_json LIKE ?1 OR company LIKE ?1
+             ORDER BY display_name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([pattern], contact_from)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn contact(&self, account: &str, id: &str) -> Result<Option<Contact>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT account, id, display_name, given_name, surname, emails_json, phones_json,
+                    company, job_title, notes
+             FROM contacts WHERE account = ?1 AND id = ?2",
+        )?;
+        Ok(statement.query_row([account, id], contact_from).optional()?)
+    }
+
+    /// Addresses for completing a recipient: contacts first, then people
+    /// mail came from, most frequent first.
+    pub fn suggest_addresses(&self, prefix: &str, limit: usize) -> Result<Vec<Address>> {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("{}%", prefix.replace(['%', '_'], ""));
+        let word = format!("% {}%", prefix.replace(['%', '_'], ""));
+        let mut seen = std::collections::HashSet::new();
+        let mut found = Vec::new();
+        for contact in self.contacts(prefix)? {
+            for email in &contact.emails {
+                if seen.insert(email.address.to_lowercase()) {
+                    found.push(Address {
+                        name: if email.name.is_empty() { contact.display_name.clone() } else { email.name.clone() },
+                        address: email.address.clone(),
+                    });
+                }
+            }
+        }
+        let mut statement = self.db.prepare_cached(
+            "SELECT from_name, from_address FROM messages
+             WHERE from_address LIKE ?1 OR from_name LIKE ?1 OR from_name LIKE ?2
+             GROUP BY lower(from_address) ORDER BY COUNT(*) DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![pattern, word, limit as i64], |row| {
+            Ok(Address { name: row.get(0)?, address: row.get(1)? })
+        })?;
+        for address in rows {
+            let address = address?;
+            if seen.insert(address.address.to_lowercase()) {
+                found.push(address);
+            }
+        }
+        found.truncate(limit);
+        Ok(found)
+    }
+}
+
+fn event_from(row: &Row) -> rusqlite::Result<Event> {
+    Ok(Event {
+        account: row.get(0)?,
+        id: row.get(1)?,
+        calendar_id: row.get(2)?,
+        subject: row.get(3)?,
+        start: row.get(4)?,
+        end: row.get(5)?,
+        all_day: row.get(6)?,
+        location: row.get(7)?,
+        organizer: json_or_default(&row.get::<_, String>(8)?),
+        attendees: json_or_default::<Vec<Attendee>>(&row.get::<_, String>(9)?),
+        preview: row.get(10)?,
+        body_html: row.get(11)?,
+        response: Response::from_graph(&row.get::<_, String>(12)?),
+        show_as: row.get(13)?,
+        is_cancelled: row.get(14)?,
+        is_online: row.get(15)?,
+        join_url: row.get(16)?,
+        is_recurring: row.get(17)?,
+        web_link: row.get(18)?,
+    })
+}
+
+fn contact_from(row: &Row) -> rusqlite::Result<Contact> {
+    Ok(Contact {
+        account: row.get(0)?,
+        id: row.get(1)?,
+        display_name: row.get(2)?,
+        given_name: row.get(3)?,
+        surname: row.get(4)?,
+        emails: json_or_default(&row.get::<_, String>(5)?),
+        phones: json_or_default::<Vec<Phone>>(&row.get::<_, String>(6)?),
+        company: row.get(7)?,
+        job_title: row.get(8)?,
+        notes: row.get(9)?,
+    })
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// An FTS5 query matching every word as a prefix, with the user's text
+/// quoted so it can't be read as query syntax.
+fn fts_query(query: &str) -> Option<String> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|word| word.replace('"', ""))
+        .filter(|word| !word.is_empty())
+        .map(|word| format!("\"{word}\"*"))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(id: &str, folder: &str, subject: &str, received: i64) -> MessageRecord {
+        MessageRecord {
+            summary: MessageSummary {
+                account: "a".into(),
+                id: id.into(),
+                folder_id: folder.into(),
+                conversation_id: String::new(),
+                subject: subject.into(),
+                from: Address { name: "Ana Pérez".into(), address: "ana@example.com".into() },
+                to: vec![],
+                preview: "preview text".into(),
+                received,
+                is_read: false,
+                is_draft: false,
+                flag: Flag::None,
+                high_importance: false,
+                has_attachments: false,
+            },
+            cc: vec![],
+            reply_to: vec![],
+            sent: received,
+            categories: vec!["Blue".into()],
+        }
+    }
+
+    #[test]
+    fn folders_list_newest_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .put_messages(&[record("1", "inbox", "older", 10), record("2", "inbox", "newer", 20), record("3", "other", "x", 30)])
+            .unwrap();
+        let rows = store.folder_rows("a", "inbox", false).unwrap();
+        let subjects: Vec<_> = rows.iter().map(|row| store.summary(*row).unwrap().unwrap().subject).collect();
+        assert_eq!(subjects, ["newer", "older"]);
+    }
+
+    #[test]
+    fn updates_keep_the_body() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.put_messages(&[record("1", "inbox", "hello", 10)]).unwrap();
+        store.put_body("a", "1", "<p>body</p>", "body", &[]).unwrap();
+        let mut changed = record("1", "inbox", "hello again", 10);
+        changed.summary.is_read = true;
+        store.put_messages(&[changed]).unwrap();
+        let detail = store.message("a", "1").unwrap().unwrap();
+        assert_eq!(detail.body_html.as_deref(), Some("<p>body</p>"));
+        assert!(detail.summary.is_read);
+        assert_eq!(detail.categories, ["Blue"]);
+    }
+
+    #[test]
+    fn search_matches_prefixes_and_bodies_without_accents() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.put_messages(&[record("1", "inbox", "Quarterly report", 10), record("2", "inbox", "Lunch", 20)]).unwrap();
+        store.put_body("a", "2", "", "the invoice is attached", &[]).unwrap();
+        assert_eq!(store.search_rows(None, "quart", 10).unwrap().len(), 1);
+        assert_eq!(store.search_rows(Some("a"), "invoice", 10).unwrap().len(), 1);
+        assert_eq!(store.search_rows(None, "perez", 10).unwrap().len(), 2);
+        assert_eq!(store.search_rows(None, "\"unbalanced", 10).unwrap().len(), 0);
+        store.remove_messages("a", &["2".into()]).unwrap();
+        assert_eq!(store.search_rows(None, "invoice", 10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn gone_folders_take_their_messages() {
+        let mut store = Store::open_in_memory().unwrap();
+        let folder = |id: &str| Folder {
+            id: id.into(),
+            parent_id: None,
+            name: id.into(),
+            well_known: None,
+            unread: 0,
+            total: 0,
+        };
+        store.put_folders("a", &[folder("inbox"), folder("old")]).unwrap();
+        store.put_messages(&[record("1", "inbox", "x", 1), record("2", "old", "y", 2)]).unwrap();
+        store.set_sync_link("a", "messages:old", Some("link")).unwrap();
+        store.put_folders("a", &[folder("inbox")]).unwrap();
+        assert!(store.row_of("a", "2").unwrap().is_none());
+        assert!(store.row_of("a", "1").unwrap().is_some());
+        assert!(store.sync_link("a", "messages:old").unwrap().is_none());
+    }
+
+    #[test]
+    fn suggestions_come_from_senders() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.put_messages(&[record("1", "inbox", "x", 1), record("2", "inbox", "y", 2)]).unwrap();
+        let found = store.suggest_addresses("pér", 5).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].address, "ana@example.com");
+    }
+}

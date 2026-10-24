@@ -1,6 +1,6 @@
 // Small building blocks used throughout.
 
-import { Theme } from "theme.slint";
+import { Theme, Icons } from "theme.slint";
 
 // The tooltip shown for the control under the pointer; drawn by the window.
 export global Tip {
@@ -271,5 +271,88 @@ export component Overlay inherits Rectangle {
         // Clicks on the card stay on it.
         TouchArea { }
         @children
+    }
+}
+
+// A drop-down list whose unavailable entries are shown greyed and can't be
+// picked.
+export component Picker inherits Rectangle {
+    in property <[string]> model;
+    // Per entry, whether it can be picked.
+    in property <[bool]> available;
+    in property <bool> enabled: true;
+    in-out property <int> current-index;
+    height: 40px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.divider;
+    background: touch.has-hover && root.enabled ? Theme.hover : Theme.surface;
+    opacity: root.enabled ? 1 : 0.5;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 6px;
+        Text {
+            text: root.model[root.current-index];
+            color: root.available[root.current-index] ? Theme.text : Theme.text-faint;
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Icon {
+            y: (parent.height - self.height) / 2;
+            icon: Icons.expand;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    // Stays open on a click on an unavailable entry.
+    popup := PopupWindow {
+        y: root.height + 2px;
+        width: root.width;
+        height: min(entries.preferred-height, 320px);
+        close-policy: close-on-click-outside;
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.divider;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000030;
+            Flickable {
+                content-height: entries.preferred-height;
+                entries := VerticalLayout {
+                    padding: 4px;
+                    for label[index] in root.model: Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius;
+                        background: index == root.current-index ? Theme.selected : entry.has-hover && entry.enabled ? Theme.hover : transparent;
+                        Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: label;
+                            color: root.available[index] ? Theme.text : Theme.text-faint;
+                            font-size: Theme.font-size;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        entry := TouchArea {
+                            enabled: root.available[index];
+                            mouse-cursor: self.enabled ? pointer : default;
+                            clicked => {
+                                root.current-index = index;
+                                popup.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

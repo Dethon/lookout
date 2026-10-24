@@ -2,7 +2,7 @@
 
 import { ListView, TextEdit, ComboBox, CheckBox, LineEdit, Spinner } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Icon, IconButton, ToolButton, Divider, VDivider, Field, Overlay } from "widgets.slint";
+import { Icon, IconButton, ToolButton, Divider, VDivider, Field, Overlay, Picker } from "widgets.slint";
 import { DayColumn, EventBox, AllDayBox, MonthCell, EventDetail, CalendarRow, EventEditor } from "types.slint";
 
 export component CalendarSidebar inherits Rectangle {
@@ -535,10 +535,11 @@ export component EventEditorDialog inherits Overlay {
                 color: Theme.text-muted;
                 vertical-alignment: center;
             }
-            ComboBox {
+            Picker {
                 y: (parent.height - self.height) / 2;
                 enabled: root.editor.id == "";
                 model: root.calendar-labels;
+                available: root.calendar-writable;
                 current-index <=> root.editor.calendar-index;
             }
         }

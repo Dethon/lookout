@@ -72,6 +72,7 @@ impl App {
         });
         APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
         app.wire(ui);
+        crate::repaint::install(ui);
         Ok(app)
     }
 

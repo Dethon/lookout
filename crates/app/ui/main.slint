@@ -551,7 +551,9 @@ export component MainWindow inherits Window {
     preferred-height: 800px;
     min-width: 720px;
     min-height: 480px;
-    background: Theme.background;
+    // Flipped to repaint the whole window when Windows asks (see repaint.rs).
+    in-out property <bool> repaint;
+    background: root.repaint ? Theme.background-nudged : Theme.background;
     default-font-size: Theme.font-size;
 
     // WebView2 is a window of its own over this one: it is hidden whenever

@@ -3381,6 +3381,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "windows-sys 0.61.2",
  "winit",
  "wry",
 ]
@@ -5736,6 +5737,7 @@ dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",

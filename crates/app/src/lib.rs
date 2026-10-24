@@ -12,6 +12,7 @@ mod models;
 mod notify;
 mod page;
 mod people_ui;
+mod repaint;
 mod update_ui;
 mod updater;
 mod viewer;

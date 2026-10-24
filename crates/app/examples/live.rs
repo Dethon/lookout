@@ -80,7 +80,8 @@ fn click(ui: &MainWindow, x: f32, y: f32) {
 
 /// With `LIVE_WINDOWED` set: a real window, the steps run on timers, and the
 /// window stays up for the last step's wait. For what only a real window
-/// shows, such as WebView2. Takes `wait:MS`, `select:N`, `page:NAME`.
+/// shows, such as WebView2 or partial repaints. Takes `wait:MS`, `select:N`, `page:NAME`,
+/// `wheel:X,Y,DY`, `hover:X,Y`, `click:X,Y`.
 fn windowed(steps: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let ui = MainWindow::new()?;
     let app = App::start(&ui)?;
@@ -99,6 +100,20 @@ fn windowed(steps: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                 "page" => {
                     let page = if value == "calendar" { Page::Calendar } else { Page::Mail };
                     ui.global::<Shell>().set_page(page);
+                }
+                "wheel" | "hover" | "click" => {
+                    let numbers: Vec<f32> = value.split(',').filter_map(|n| n.parse().ok()).collect();
+                    if let [x, y, ..] = numbers[..] {
+                        let position = LogicalPosition::new(x, y);
+                        let window = ui.window();
+                        window.dispatch_event(WindowEvent::PointerMoved { position });
+                        if name == "wheel" {
+                            let delta_y = numbers.get(2).copied().unwrap_or(-200.0);
+                            window.dispatch_event(WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y });
+                        } else if name == "click" {
+                            click(&ui, x, y);
+                        }
+                    }
                 }
                 _ => {}
             }

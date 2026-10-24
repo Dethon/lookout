@@ -22,13 +22,15 @@ log = { version = "0.4", features = ["std"] }
 open = "5"
 rfd = "0.17"
 # Software renderer only: GPU renderers cost 80-240 MB of driver memory.
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06"] }
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06", "unstable-winit-030"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # WebView2, to compare Blitz's drawing with a browser's (see `viewer.rs`).
 [target.'cfg(windows)'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57", default-features = false }
+# Asks whether Windows wants the window painted (see `repaint.rs`).
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi"] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"

@@ -4,6 +4,8 @@ export global Theme {
     in-out property <bool> dark: false;
 
     out property <color> background: dark ? #1b1b1d : #f5f5f5;
+    // A shade off the background, to make Slint repaint the whole window.
+    out property <color> background-nudged: dark ? #1b1b1e : #f5f5f4;
     out property <color> surface: dark ? #242427 : #ffffff;
     out property <color> surface-alt: dark ? #2b2b2f : #fafafa;
     out property <color> hover: dark ? #323237 : #ebebeb;

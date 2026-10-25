@@ -5,7 +5,7 @@ import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter
 import {
     Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult, Suggestion,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
-    ContactRow, ContactView, ContactEditor,
+    ContactRow, ContactView, ContactEditor, ContactField, RecentMessage,
 } from "types.slint";
 import { FolderPane, FolderStrip, MessageList, ReadingPane, ComposePane } from "mail.slint";
 import { CalendarSidebar, CalendarView, EventDetailDialog, EventEditorDialog } from "calendar.slint";
@@ -13,7 +13,7 @@ import { PeopleView, ContactEditorDialog } from "people.slint";
 
 export { Palette, Theme, Icons, Panes, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, Suggestion,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
-    ContactRow, ContactView, ContactEditor }
+    ContactRow, ContactView, ContactEditor, ContactField, RecentMessage }
 
 export global Shell {
     in-out property <Page> page: Page.mail;
@@ -205,6 +205,7 @@ export global People {
     callback edit-contact();
     callback delete-contact();
     callback email(string);
+    callback open-message(string, string, string);
     callback save-contact(ContactEditor);
     callback cancel-editor();
 }
@@ -1032,6 +1033,10 @@ export component MainWindow inherits Window {
                         edit-contact => { People.edit-contact(); }
                         delete-contact => { People.delete-contact(); }
                         email(address) => { People.email(address); }
+                        open-message(account, folder, id) => {
+                            Shell.page = Page.mail;
+                            People.open-message(account, folder, id);
+                        }
                     }
                 }
             }

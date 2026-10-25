@@ -267,6 +267,27 @@ export struct ContactEditor {
     saving: bool,
 }
 
+// A line of a contact's card.
+export struct ContactField {
+    icon: string,
+    label: string,
+    value: string,
+    // An address: a click starts a message to it.
+    email: bool,
+}
+
+// A message from or to the person shown.
+export struct RecentMessage {
+    account: string,
+    folder: string,
+    id: string,
+    subject: string,
+    preview: string,
+    date: string,
+    // From them, rather than to them.
+    incoming: bool,
+}
+
 export struct ContactView {
     shown: bool,
     account: string,
@@ -275,7 +296,10 @@ export struct ContactView {
     initials: string,
     hue: int,
     picture: image,
-    lines: [string],
+    // Job title and company.
+    title: string,
+    fields: [ContactField],
     emails: [string],
     notes: string,
+    recent: [RecentMessage],
 }

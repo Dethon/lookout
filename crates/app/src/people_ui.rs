@@ -4,11 +4,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use lookout_core::model::{Address, Contact, Phone};
+use lookout_core::when;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::app::App;
 use crate::engine::Request;
-use crate::{ContactEditor, ContactRow, ContactView, MainWindow, People, format, mail_ui};
+use crate::{ContactEditor, ContactField, ContactRow, ContactView, Icons, MainWindow, People, RecentMessage, format, mail_ui};
+
+// Messages with the person shown on their card.
+const RECENT_MESSAGES: usize = 8;
 
 #[derive(Default)]
 pub struct PeopleState {
@@ -47,6 +51,9 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     people.on_email(with_app!(app, |app, address| {
         let (to, _) = format::parse_addresses(&address);
         mail_ui::new_message(&app, to, String::new());
+    }));
+    people.on_open_message(with_app!(app, |app, account, folder, id| {
+        mail_ui::show_message(&app, &account, &folder, &id);
     }));
     people.on_save_contact(with_app!(app, |app, editor| save(&app, editor)));
     people.on_cancel_editor(with_app!(app, |app| {
@@ -143,23 +150,51 @@ fn select(app: &Rc<App>, index: i32) {
     let contacts = app.people.contacts.borrow();
     let Some(contact) = contacts.get(index.max(0) as usize) else { return };
     *app.people.selected.borrow_mut() = Some((contact.account.clone(), contact.id.clone()));
-    let mut lines: Vec<SharedString> = Vec::new();
-    let role = [contact.job_title.as_str(), contact.company.as_str()]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !role.is_empty() {
-        lines.push(role.into());
-    }
+    let icons = ui.global::<Icons>();
+    let field = |icon: SharedString, label: &str, value: &str, email: bool| ContactField {
+        icon,
+        label: label.into(),
+        value: value.into(),
+        email,
+    };
+    let mut fields: Vec<ContactField> = contact
+        .emails
+        .iter()
+        .map(|email| field(icons.get_mail(), "Email", &email.address, true))
+        .collect();
     for phone in &contact.phones {
         let kind = match phone.kind.as_str() {
             "mobile" => "Mobile",
-            "business" => "Work",
-            _ => "Home",
+            "business" => "Work phone",
+            _ => "Home phone",
         };
-        lines.push(format!("{kind}: {}", phone.number).into());
+        fields.push(field(icons.get_phone(), kind, &phone.number, false));
     }
+    if !contact.company.is_empty() {
+        fields.push(field(icons.get_work(), "Company", &contact.company, false));
+    }
+    let title = [contact.job_title.as_str(), contact.company.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let addresses: Vec<String> = contact.emails.iter().map(|email| email.address.clone()).collect();
+    let now = chrono::Local::now();
+    let recent: Vec<RecentMessage> = app
+        .store
+        .messages_with(&addresses, RECENT_MESSAGES)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|message| RecentMessage {
+            incoming: addresses.iter().any(|address| address.eq_ignore_ascii_case(&message.from.address)),
+            account: message.account.into(),
+            folder: message.folder_id.into(),
+            id: message.id.into(),
+            subject: message.subject.into(),
+            preview: message.preview.split_whitespace().collect::<Vec<_>>().join(" ").into(),
+            date: when::list_date(message.received, now).into(),
+        })
+        .collect();
     let emails: Vec<SharedString> = contact.emails.iter().map(|email| email.address.as_str().into()).collect();
     let people = ui.global::<People>();
     people.set_selected(index);
@@ -171,9 +206,11 @@ fn select(app: &Rc<App>, index: i32) {
         initials: format::initials(&name_of(contact)).into(),
         hue: hue_of(contact),
         picture: app.photos.for_contact(&app.store, &contact.account, &contact.id),
-        lines: ModelRc::new(VecModel::from(lines)),
+        title: title.into(),
+        fields: ModelRc::new(VecModel::from(fields)),
         emails: ModelRc::new(VecModel::from(emails)),
         notes: contact.notes.as_str().into(),
+        recent: ModelRc::new(VecModel::from(recent)),
     });
 }
 

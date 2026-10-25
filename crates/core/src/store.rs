@@ -836,6 +836,29 @@ impl Store {
         Ok(statement.query_row([account, id], contact_from).optional()?)
     }
 
+    /// The latest messages from or to any of these addresses.
+    pub fn messages_with(&self, addresses: &[String], limit: usize) -> Result<Vec<MessageSummary>> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conditions = Vec::new();
+        let mut values: Vec<String> = Vec::new();
+        for address in addresses {
+            values.push(address.trim().to_owned());
+            conditions.push(format!("from_address LIKE ?{}", values.len()));
+            // Quoted, so a longer address holding this one doesn't match.
+            values.push(format!("%\"{}\"%", address.trim().replace(['%', '_'], "")));
+            conditions.push(format!("to_json LIKE ?{}", values.len()));
+        }
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS} FROM messages WHERE is_draft = 0 AND ({}) ORDER BY received DESC LIMIT {limit}",
+            conditions.join(" OR ")
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), summary_from)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // Contacts' pictures
 
     /// Contacts whose picture wasn't looked for since `before`, never
@@ -1141,6 +1164,21 @@ mod tests {
         store.clear_contacts("a").unwrap();
         store.drop_orphan_photos().unwrap();
         assert_eq!(store.contact_photo("a", "c").unwrap(), None);
+    }
+
+    #[test]
+    fn messages_with_a_person_come_newest_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut to_ana = record("2", "sent", "to", 5);
+        to_ana.summary.from = Address { name: "Me".into(), address: "me@example.com".into() };
+        to_ana.summary.to = vec![Address { name: "Ana".into(), address: "ANA@example.com".into() }];
+        let mut to_anabel = record("3", "sent", "other", 6);
+        to_anabel.summary.from = to_ana.summary.from.clone();
+        to_anabel.summary.to = vec![Address { name: "Anabel".into(), address: "xana@example.com".into() }];
+        store.put_messages(&[record("1", "inbox", "from", 1), to_ana, to_anabel]).unwrap();
+        let found = store.messages_with(&["ana@example.com".into()], 10).unwrap();
+        let subjects: Vec<&str> = found.iter().map(|m| m.subject.as_str()).collect();
+        assert_eq!(subjects, ["to", "from"]);
     }
 
     #[test]

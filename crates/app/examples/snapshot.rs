@@ -350,15 +350,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             contact("Carmen Ruiz", "carmen@contoso.com", "CR"),
         ])));
         people.set_selected(0);
+        let icons = ui.global::<Icons>();
+        let field = |icon: SharedString, label: &str, value: &str, email: bool| ContactField {
+            icon,
+            label: label.into(),
+            value: value.into(),
+            email,
+        };
+        let recent = |subject: &str, preview: &str, date: &str, incoming: bool| RecentMessage {
+            subject: subject.into(),
+            preview: preview.into(),
+            date: date.into(),
+            incoming,
+            ..Default::default()
+        };
         people.set_contact(ContactView {
             shown: true,
             name: "Ana Pérez".into(),
             initials: "AP".into(),
             hue: 5,
             picture: photo(),
-            lines: strings(&["Product manager, Contoso", "Mobile: +34 600 000 000"]),
+            title: "Product manager · Contoso".into(),
+            fields: ModelRc::new(VecModel::from(vec![
+                field(icons.get_mail(), "Email", "ana@example.com", true),
+                field(icons.get_phone(), "Mobile", "+34 600 000 000", false),
+                field(icons.get_work(), "Company", "Contoso", false),
+            ])),
             emails: strings(&["ana@example.com"]),
             notes: "Met at RustConf.".into(),
+            recent: ModelRc::new(VecModel::from(vec![
+                recent("Re: Trip to Lisbon", "Sounds good! I booked the flights for the 14th", "Wed 21/10", true),
+                recent("Trip to Lisbon", "Shall we go in November? The weather should still be fine", "Tue 20/10", false),
+                recent("Quarterly numbers", "Here are the quarterly numbers we talked about", "12/10/2026", true),
+            ])),
             ..Default::default()
         });
     }

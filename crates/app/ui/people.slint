@@ -6,6 +6,22 @@ import { Icon, IconButton, ToolButton, Avatar, Divider, Field, SearchBox, Overla
 import { Panes } from "panes.slint";
 import { ContactRow, ContactView, ContactEditor } from "types.slint";
 
+// A titled group of lines on a contact's card.
+component Section inherits VerticalLayout {
+    in property <string> title;
+    spacing: 4px;
+    max-width: 640px;
+    Text {
+        text: root.title;
+        color: Theme.text-muted;
+        font-size: Theme.small;
+        font-weight: 600;
+    }
+    Divider { }
+    Rectangle { height: 4px; }
+    @children
+}
+
 export component PeopleView inherits Rectangle {
     in property <[ContactRow]> contacts;
     in property <int> selected: -1;
@@ -17,6 +33,7 @@ export component PeopleView inherits Rectangle {
     callback edit-contact();
     callback delete-contact();
     callback email(string);
+    callback open-message(string, string, string);
     background: Theme.surface;
 
     HorizontalLayout {
@@ -92,64 +109,158 @@ export component PeopleView inherits Rectangle {
                 text: "Select a person to see their details";
                 color: Theme.text-faint;
             }
-            if root.contact.shown: VerticalLayout {
-                padding: 28px;
-                spacing: 12px;
-                alignment: start;
-                HorizontalLayout {
-                    spacing: 16px;
-                    Avatar {
-                        initials: root.contact.initials;
-                        hue: root.contact.hue;
-                        picture: root.contact.picture;
-                        size: 72px;
-                    }
-                    Text {
-                        text: root.contact.name;
-                        font-size: 24px;
-                        font-weight: 600;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    IconButton {
-                        icon: Icons.edit;
-                        tooltip: "Edit";
-                        clicked => { root.edit-contact(); }
-                    }
-                    IconButton {
-                        icon: Icons.delete;
-                        tooltip: "Delete";
-                        clicked => { root.delete-contact(); }
-                    }
-                }
-                for address in root.contact.emails: HorizontalLayout {
-                    spacing: 8px;
-                    Icon {
-                        icon: Icons.mail;
-                        width: 16px;
-                        height: 16px;
-                    }
-                    Text {
-                        text: address;
-                        color: Theme.link;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.email(address); }
+            if root.contact.shown: Flickable {
+                content-height: card.preferred-height;
+                card := VerticalLayout {
+                    width: parent.width;
+                    padding: 28px;
+                    padding-top: 24px;
+                    spacing: 20px;
+                    alignment: start;
+                    // Who, and what can be done.
+                    HorizontalLayout {
+                        spacing: 20px;
+                        Avatar {
+                            y: 0;
+                            initials: root.contact.initials;
+                            hue: root.contact.hue;
+                            picture: root.contact.picture;
+                            size: 88px;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: root.contact.name;
+                                font-size: 24px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                overflow: elide;
+                            }
+                            if root.contact.title != "": Text {
+                                text: root.contact.title;
+                                color: Theme.text-muted;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                padding-top: 8px;
+                                spacing: 6px;
+                                alignment: start;
+                                if root.contact.emails.length > 0: ToolButton {
+                                    icon: Icons.send;
+                                    label: "Email";
+                                    primary: true;
+                                    clicked => { root.email(root.contact.emails[0]); }
+                                }
+                                ToolButton {
+                                    icon: Icons.edit;
+                                    label: "Edit";
+                                    clicked => { root.edit-contact(); }
+                                }
+                                ToolButton {
+                                    icon: Icons.delete;
+                                    label: "Delete";
+                                    tint: Theme.danger;
+                                    clicked => { root.delete-contact(); }
+                                }
+                            }
                         }
                     }
-                    Rectangle { horizontal-stretch: 1; }
-                }
-                for line in root.contact.lines: Text {
-                    text: line;
-                    color: Theme.text;
-                    wrap: word-wrap;
-                }
-                if root.contact.notes != "": Text {
-                    text: root.contact.notes;
-                    color: Theme.text-muted;
-                    wrap: word-wrap;
+                    if root.contact.fields.length > 0 || root.contact.notes != "": Section {
+                        title: "Contact information";
+                        for field in root.contact.fields: HorizontalLayout {
+                            spacing: 14px;
+                            min-height: 40px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: field.icon;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: field.label;
+                                    color: Theme.text-muted;
+                                    font-size: Theme.small;
+                                }
+                                Text {
+                                    text: field.value;
+                                    color: field.email ? Theme.link : Theme.text;
+                                    overflow: elide;
+                                    TouchArea {
+                                        enabled: field.email;
+                                        mouse-cursor: field.email ? pointer : default;
+                                        clicked => { root.email(field.value); }
+                                    }
+                                }
+                            }
+                        }
+                        if root.contact.notes != "": HorizontalLayout {
+                            spacing: 14px;
+                            Icon {
+                                y: 2px;
+                                icon: Icons.notes;
+                            }
+                            VerticalLayout {
+                                Text {
+                                    text: "Notes";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.small;
+                                }
+                                Text {
+                                    text: root.contact.notes;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    if root.contact.recent.length > 0: Section {
+                        title: "Recent messages";
+                        for message in root.contact.recent: Rectangle {
+                            height: 52px;
+                            border-radius: Theme.radius;
+                            background: recent-touch.has-hover ? Theme.hover : transparent;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 8px;
+                                spacing: 12px;
+                                Icon {
+                                    y: (parent.height - self.height) / 2;
+                                    icon: message.incoming ? Icons.inbox : Icons.send;
+                                    color: Theme.text-faint;
+                                    width: 16px;
+                                    height: 16px;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: message.subject == "" ? "(no subject)" : message.subject;
+                                            color: Theme.text;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: message.date;
+                                            color: Theme.text-muted;
+                                            font-size: Theme.small;
+                                        }
+                                    }
+                                    Text {
+                                        text: message.preview;
+                                        color: Theme.text-muted;
+                                        font-size: Theme.small;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                            recent-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-message(message.account, message.folder, message.id); }
+                            }
+                        }
+                    }
                 }
             }
         }

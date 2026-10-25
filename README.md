@@ -56,7 +56,8 @@ signing in), against the hundreds the new Outlook takes.
   cancel events; attendees, location, Teams meetings, show-as, reminders;
   accept, tentative, decline; join online meetings.
 - **People**: contacts across accounts, search, create, edit, delete, mail
-  a contact.
+  a contact; each card lists the latest messages with that person, a click
+  away.
 - **Windows**: new mail in the Inbox shows in Windows notifications while
   the window is in the background, and a click on one opens the message;
   closing the window leaves Lookout in the notification area, where a

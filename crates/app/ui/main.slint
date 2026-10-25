@@ -127,9 +127,11 @@ export global Mail {
     callback show-images();
     in-out property <bool> original;
     callback toggle-original();
-    // The open message as sent, drawn by Blitz: whether it is, what shows of
-    // it and where, the size of all of it, and whether text is selected.
+    // The open message drawn by Blitz, as sent or simplified: whether it
+    // is, what shows of it and where, the size of all of it, and whether
+    // text is selected.
     in-out property <bool> page;
+    in-out property <bool> page-simplified;
     in-out property <image> page-picture;
     in-out property <length> picture-x;
     in-out property <length> picture-y;
@@ -893,6 +895,7 @@ export component MainWindow inherits Window {
                                 original: Mail.original;
                                 toggle-original => { Mail.toggle-original(); }
                                 page: Mail.page;
+                                page-simplified: Mail.page-simplified;
                                 page-picture: Mail.page-picture;
                                 picture-x: Mail.picture-x;
                                 picture-y: Mail.picture-y;

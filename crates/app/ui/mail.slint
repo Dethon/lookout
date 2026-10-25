@@ -536,6 +536,8 @@ export component PageView inherits Rectangle {
     in property <length> page-width;
     in property <length> page-height;
     in property <bool> has-selection;
+    // What the page is drawn on, until it is.
+    in property <color> paper: white;
     // The size in view, and how far the page is scrolled.
     callback view(length, length, length, length);
     // Selecting text: a press, a drag, and a double click for a word.
@@ -546,8 +548,7 @@ export component PageView inherits Rectangle {
     callback copy();
     // What is under the pointer: 0 nothing, 1 a link, 2 text.
     pure callback over(length, length) -> int;
-    // Messages bring their own colours, made for a white page.
-    background: white;
+    background: root.paper;
     function report() {
         root.view(scroll.visible-width, scroll.visible-height, -scroll.content-x, -scroll.content-y);
     }
@@ -717,10 +718,13 @@ export component ReadingPane inherits Rectangle {
     callback toggle-read();
     callback show-images();
     // The body as sent instead of simplified: drawn by Blitz into a
-    // picture (`page`), or in WebView2 (`webview`).
+    // picture (`page`), or in WebView2 (`webview`). Simplified, it is drawn
+    // by Blitz as well (`page-simplified`), so that its text can be
+    // selected, or natively should Blitz fail.
     in property <bool> original;
     callback toggle-original();
     in property <bool> page;
+    in property <bool> page-simplified;
     in property <image> page-picture;
     in property <length> page-width;
     in property <length> page-height;
@@ -1156,8 +1160,10 @@ export component ReadingPane inherits Rectangle {
                 indeterminate: true;
             }
         }
-        if root.original && root.page: PageView {
+        if root.page: PageView {
             vertical-stretch: 1;
+            // Messages as sent bring their own colours, made for white.
+            paper: root.page-simplified ? Theme.surface : white;
             picture: root.page-picture;
             picture-x: root.picture-x;
             picture-y: root.picture-y;
@@ -1189,7 +1195,7 @@ export component ReadingPane inherits Rectangle {
             changed width => { root.original-area(self.left, self.top, self.width, self.height); }
             changed height => { root.original-area(self.left, self.top, self.width, self.height); }
         }
-        if !root.reader.loading && !(root.original && (root.page || root.webview)): BodyView {
+        if !root.reader.loading && !root.page && !(root.original && root.webview): BodyView {
             blocks: root.blocks;
             vertical-stretch: 1;
             link-clicked(link) => { root.link-clicked(link); }

@@ -44,6 +44,9 @@ pub struct MailState {
     selected: RefCell<Option<(String, String)>>,
     open_token: Cell<u64>,
     detail: RefCell<Option<MessageDetail>>,
+    /// The open message simplified, as the native blocks and the page that
+    /// lets its text be selected are made from.
+    rendered: RefCell<Rendered>,
     blocks: Rc<VecModel<BodyBlock>>,
     /// Where each picture source is shown: block, place in its row, and
     /// the size the sender gave.
@@ -96,6 +99,7 @@ impl MailState {
             selected: RefCell::new(None),
             open_token: Cell::new(0),
             detail: RefCell::new(None),
+            rendered: RefCell::new(Rendered::default()),
             blocks: Rc::new(VecModel::default()),
             picture_blocks: RefCell::new(HashMap::new()),
             remote_shown: Cell::new(false),
@@ -856,11 +860,11 @@ pub fn opened(app: &Rc<App>, token: u64, detail: Option<MessageDetail>) {
     let account = detail.summary.account.clone();
     let id = detail.summary.id.clone();
     *app.mail.detail.borrow_mut() = Some(detail);
+    *app.mail.rendered.borrow_mut() = rendered;
     let original = app.config.borrow().original_view;
     if original && webview(app) {
         request_original(app);
-    }
-    if !(original && !webview(app) && open_page(app, false)) {
+    } else if !open_page(app, false) {
         request_pictures(app, app.mail.remote_shown.get());
     }
     if unread {
@@ -1397,33 +1401,32 @@ fn toggle_original(app: &Rc<App>) {
     if let Some(ui) = app.ui() {
         ui.global::<Mail>().set_original(on);
     }
+    if webview(app) && on {
+        close_page(app);
+        request_original(app);
+        return;
+    }
     if webview(app) {
-        if on {
-            request_original(app);
-        } else {
-            *app.mail.original.loaded.borrow_mut() = None;
-            #[cfg(windows)]
-            app.mail.original.panel.borrow_mut().take();
-        }
-    } else if on {
-        if open_page(app, false) {
-            // The simplified view's pictures aren't needed meanwhile.
-            for block in 0..app.mail.blocks.row_count() {
-                if let Some(mut block_data) = app.mail.blocks.row_data(block)
-                    && block_data.kind == 3
-                {
-                    let pictures: Vec<crate::Picture> = block_data
-                        .pictures
-                        .iter()
-                        .map(|picture| crate::Picture { image: slint::Image::default(), loaded: false, ..picture })
-                        .collect();
-                    body::set_pictures(&mut block_data, pictures);
-                    app.mail.blocks.set_row_data(block, block_data);
-                }
+        *app.mail.original.loaded.borrow_mut() = None;
+        #[cfg(windows)]
+        app.mail.original.panel.borrow_mut().take();
+    }
+    if open_page(app, false) {
+        // The native view's pictures aren't needed meanwhile.
+        for block in 0..app.mail.blocks.row_count() {
+            if let Some(mut block_data) = app.mail.blocks.row_data(block)
+                && block_data.kind == 3
+            {
+                let pictures: Vec<crate::Picture> = block_data
+                    .pictures
+                    .iter()
+                    .map(|picture| crate::Picture { image: slint::Image::default(), loaded: false, ..picture })
+                    .collect();
+                body::set_pictures(&mut block_data, pictures);
+                app.mail.blocks.set_row_data(block, block_data);
             }
         }
     } else {
-        close_page(app);
         request_pictures(app, app.mail.remote_shown.get());
     }
 }
@@ -1433,25 +1436,40 @@ fn webview(app: &App) -> bool {
     cfg!(windows) && app.config.borrow().webview
 }
 
-/// Draws the open message as sent with Blitz. False if it can't be, and the
-/// simplified view should show instead.
+/// Draws the open message with Blitz: as sent, or simplified in the
+/// theme's colours with text that can be selected. False if it can't be,
+/// and the simplified view should be drawn natively instead.
 fn open_page(app: &Rc<App>, keep_scroll: bool) -> bool {
     let Some(ui) = app.ui() else { return false };
-    let Some(html) = app.mail.detail.borrow().as_ref().and_then(|detail| detail.body_html.clone()) else {
+    let Some(sent) = app.mail.detail.borrow().as_ref().and_then(|detail| detail.body_html.clone()) else {
         close_page(app);
         return false;
+    };
+    let (dark, original) = {
+        let config = app.config.borrow();
+        (config.dark, config.original_view)
+    };
+    let (html, paper) = if original {
+        (sent, crate::page::Paper::SENT)
+    } else {
+        let colours = body::colours(dark);
+        let html = body::page(&app.mail.rendered.borrow(), dark, app.mail.remote_shown.get());
+        let background = u32::from_str_radix(&colours.surface[1..], 16).unwrap_or(0xffffff);
+        let background = ((background >> 16) as u8, (background >> 8) as u8, background as u8);
+        (html, crate::page::Paper { background, dark, selection: Some(colours.selection) })
     };
     let Some((account, id)) = app.mail.selected.borrow().clone() else { return false };
     let resources = crate::page::Resources::new(app.engine.clone(), account, id, app.mail.remote_shown.get(), || {
         _ = slint::invoke_from_event_loop(|| crate::app::with_app(paint_page_loaded));
     });
-    let Some(page) = crate::page::guard("reading a message", || crate::page::Page::new(&html, resources)) else {
+    let Some(page) = crate::page::guard("reading a message", || crate::page::Page::new(&html, resources, paper)) else {
         close_page(app);
         return false;
     };
     *app.mail.page.borrow_mut() = Some(page);
     let mail = ui.global::<Mail>();
     mail.set_page_selected(false);
+    mail.set_page_simplified(!original);
     if !keep_scroll {
         let (width, height, _, _) = app.mail.page_view.get();
         app.mail.page_view.set((width, height, 0.0, 0.0));
@@ -1527,7 +1545,9 @@ fn show_painted(app: &Rc<App>, painted: Option<Option<((f32, f32), crate::page::
         None => {
             drop(ui);
             close_page(app);
-            app.status("This message can't be shown as sent, so it is simplified.");
+            if app.config.borrow().original_view {
+                app.status("This message can't be shown as sent, so it is simplified.");
+            }
             request_pictures(app, app.mail.remote_shown.get());
         }
     }

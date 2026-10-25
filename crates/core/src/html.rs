@@ -240,6 +240,51 @@ pub fn markdown_to_html(text: &str) -> String {
     html
 }
 
+/// HTML for a paragraph's markdown, as `render` writes it: inline only,
+/// each line break kept, and `<font color>` as a coloured span. Nothing
+/// else in it is read as HTML.
+pub fn styled_to_html(markdown: &str) -> String {
+    use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
+    let mut paragraphs = 0;
+    let events = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH).filter_map(|event| match event {
+        Event::Start(Tag::Paragraph) => {
+            paragraphs += 1;
+            // An empty line in the text, which markdown takes as the start
+            // of another paragraph.
+            (paragraphs > 1).then(|| Event::Html("<br><br>".into()))
+        }
+        Event::End(TagEnd::Paragraph) => None,
+        Event::SoftBreak => Some(Event::HardBreak),
+        // Spaces as written, as between table cells, rather than collapsed.
+        Event::Text(text) if text.contains("  ") => {
+            let mut previous = ' ';
+            let kept: String = text
+                .chars()
+                .map(|c| {
+                    let kept = if c == ' ' && previous == ' ' { '\u{a0}' } else { c };
+                    previous = c;
+                    kept
+                })
+                .collect();
+            Some(Event::Text(kept.into()))
+        }
+        Event::Html(tag) | Event::InlineHtml(tag) => Some(match tag.as_ref() {
+            "<u>" | "</u>" => Event::InlineHtml(tag),
+            "</font>" => Event::InlineHtml("</span>".into()),
+            _ => match tag.strip_prefix("<font color=\"#").and_then(|rest| rest.strip_suffix("\">")) {
+                Some(hex) if hex.chars().all(|c| c.is_ascii_hexdigit()) => {
+                    Event::InlineHtml(CowStr::from(format!("<span style=\"color:#{hex}\">")))
+                }
+                _ => Event::Text(tag),
+            },
+        }),
+        other => Some(other),
+    });
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, events);
+    html
+}
+
 /// HTML for text the user typed, each line kept.
 pub fn text_to_html(text: &str) -> String {
     let mut html = String::from("<div style=\"font-family:Segoe UI,sans-serif;font-size:11pt\">");
@@ -1025,6 +1070,22 @@ mod tests {
         assert!(html.contains("<li>one</li>"), "{html}");
         assert!(html.contains("<blockquote>"), "{html}");
         assert!(html.contains("<a href=\"https://x.test\">site</a>"), "{html}");
+    }
+
+    #[test]
+    fn styled_text_becomes_html() {
+        let rendered = render(
+            "<p>Hi <b>Ana</b>, <a href=\"https://x.test/a?b=1&amp;c=2\">see <i>this</i></a><br>\
+             <span style=\"color:#cc0000\">red <u>under</u></span> &lt;tag&gt; *not*<br><br>after</p>",
+        );
+        let html = styled_to_html(&rendered.blocks[0].markdown);
+        assert_eq!(
+            html,
+            "Hi <strong>Ana</strong>, <a href=\"https://x.test/a?b=1&amp;c=2\">see <em>this</em></a><br />\n\
+             <span style=\"color:#cc0000\">red </span><span style=\"color:#cc0000\"><u>under</u></span> &lt;tag&gt; *not*<br><br>after"
+        );
+        assert_eq!(styled_to_html("a   b"), "a \u{a0}\u{a0}b");
+        assert_eq!(styled_to_html("<font color=\"#12\" onclick=\"x\">a</font>"), "&lt;font color=\"#12\" onclick=\"x\"&gt;a</span>");
     }
 
     #[test]

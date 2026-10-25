@@ -19,9 +19,9 @@ use blitz_dom::{DocumentConfig, NodeId, Point, StyleThreading, UserAgentStyleshe
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request as NetRequest};
 use blitz_traits::shell::{ColorScheme, Viewport};
-use peniko::color::palette::css::WHITE;
+use parley::{Affinity, Cursor, Selection};
 use peniko::kurbo::{Affine, Rect};
-use peniko::Fill;
+use peniko::{Color, Fill};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::engine::{Engine, Request};
@@ -63,8 +63,24 @@ pub fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
+/// What a page is drawn on, and how its selection shows.
+#[derive(Clone, Copy)]
+pub struct Paper {
+    pub background: (u8, u8, u8),
+    pub dark: bool,
+    /// Drawn over selected text, translucent; Blitz's own pale blue
+    /// otherwise, which only suits a light page.
+    pub selection: Option<(u8, u8, u8, u8)>,
+}
+
+impl Paper {
+    /// White, as messages are made for.
+    pub const SENT: Paper = Paper { background: (255, 255, 255), dark: false, selection: None };
+}
+
 pub struct Page {
     doc: HtmlDocument,
+    paper: Paper,
     /// The renderer, and the physical size it draws.
     renderer: Option<((u32, u32), VelloCpuImageRenderer)>,
     /// The viewport laid out for: physical width and height, and the scale.
@@ -72,8 +88,9 @@ pub struct Page {
     /// The part of the page the picture shown holds, in logical pixels: x,
     /// y, width and height. None once it is out of date.
     painted: Option<(f32, f32, f32, f32)>,
-    /// A selection is being dragged and has found its first letter.
-    anchored: bool,
+    /// Where the selection starts and ends: an inline root and a byte in
+    /// its text. None while a drag hasn't reached any text.
+    ends: Option<((NodeId, usize), (NodeId, usize))>,
     arrived: Arc<AtomicBool>,
 }
 
@@ -87,7 +104,7 @@ pub struct Painted {
 }
 
 impl Page {
-    pub fn new(html: &str, resources: Resources) -> Self {
+    pub fn new(html: &str, resources: Resources, paper: Paper) -> Self {
         let arrived = resources.arrived.clone();
         let config = DocumentConfig {
             ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), UserAgentStylesheet::parse(EMAIL_CSS)],
@@ -98,10 +115,11 @@ impl Page {
         };
         Self {
             doc: HtmlDocument::from_html(html, config),
+            paper,
             renderer: None,
             viewport: (0, 0, 0.0),
             painted: None,
-            anchored: false,
+            ends: None,
             arrived,
         }
     }
@@ -112,7 +130,8 @@ impl Page {
         if viewport != self.viewport {
             self.viewport = viewport;
             self.painted = None;
-            self.doc.set_viewport(Viewport::new(viewport.0, viewport.1, scale, ColorScheme::Light));
+            let scheme = if self.paper.dark { ColorScheme::Dark } else { ColorScheme::Light };
+            self.doc.set_viewport(Viewport::new(viewport.0, viewport.1, scale, scheme));
         }
         self.doc.resolve(0.0);
     }
@@ -164,18 +183,34 @@ impl Page {
         // time, and pictures since forgotten made it panic.
         renderer.reset();
         self.doc.set_viewport_scroll(Point { x: f64::from(x), y: f64::from(top) });
+        // The selection drawn here instead of by Blitz: it is put back after.
+        let overlay = self.paper.selection.zip(self.ends).map(|(colour, ends)| {
+            let shift = Affine::translate((-f64::from(x) * f64::from(scale), -f64::from(top) * f64::from(scale)));
+            let rects = selection_rects(&self.doc, f64::from(scale));
+            self.doc.clear_text_selection();
+            (colour, ends, shift, rects)
+        });
+        let (r, g, b) = self.paper.background;
         let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, band_height);
         let doc = &mut self.doc;
         renderer.render(
             |scene| {
-                // On white, as messages expect: the picture is opaque, and
-                // Slint copies it to the screen without blending.
+                // Opaque, so that Slint copies the picture to the screen
+                // without blending.
                 let all = Rect::new(0.0, 0.0, f64::from(width), f64::from(band_height));
-                scene.fill(Fill::NonZero, Affine::IDENTITY, WHITE, None, &all);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(r, g, b), None, &all);
                 blitz_paint::paint_scene(scene, doc, f64::from(scale), width, band_height, 0, 0);
+                if let Some(((r, g, b, a), _, shift, rects)) = &overlay {
+                    for rect in rects {
+                        scene.fill(Fill::NonZero, *shift, Color::from_rgba8(*r, *g, *b, *a), None, rect);
+                    }
+                }
             },
             pixels.make_mut_bytes(),
         );
+        if let Some((_, (anchor, focus), _, _)) = overlay {
+            self.doc.set_text_selection(anchor.0, anchor.1, focus.0, focus.1);
+        }
         self.painted = Some((x, top, view_width, band));
         Some(Painted { picture: Image::from_rgba8(pixels), x, y: top, width: view_width, height: band })
     }
@@ -202,10 +237,9 @@ impl Page {
     pub fn select_from(&mut self, x: f32, y: f32) -> bool {
         let had = self.doc.has_text_selection();
         self.doc.clear_text_selection();
-        self.anchored = false;
-        if let Some((node, offset)) = self.doc.find_text_position(x, y) {
-            self.doc.set_text_selection(node, offset, node, offset);
-            self.anchored = true;
+        self.ends = None;
+        if let Some(at) = self.doc.find_text_position(x, y) {
+            self.select(at, at);
         }
         self.repaint_if(had)
     }
@@ -214,15 +248,17 @@ impl Page {
     /// text, it starts at the first letter reached. True if the page must
     /// be painted again.
     pub fn select_to(&mut self, x: f32, y: f32) -> bool {
-        if !self.anchored {
-            if let Some((node, offset)) = self.doc.find_text_position(x, y) {
-                self.doc.set_text_selection(node, offset, node, offset);
-                self.anchored = true;
-            }
+        let Some(at) = self.doc.find_text_position(x, y) else { return false };
+        let Some((anchor, focus)) = self.ends else {
+            self.select(at, at);
+            return false;
+        };
+        if focus == at {
             return false;
         }
         let before = self.doc.get_text_selection_ranges();
-        self.doc.extend_text_selection_to_point(x, y);
+        self.doc.update_selection_focus(at.0, at.1);
+        self.ends = Some((anchor, at));
         let changed = self.doc.get_text_selection_ranges() != before;
         self.repaint_if(changed)
     }
@@ -235,9 +271,13 @@ impl Page {
         if start == end {
             return false;
         }
-        self.doc.set_text_selection(node, start, node, end);
-        self.anchored = false;
+        self.select((node, start), (node, end));
         self.repaint_if(true)
+    }
+
+    fn select(&mut self, anchor: (NodeId, usize), focus: (NodeId, usize)) {
+        self.doc.set_text_selection(anchor.0, anchor.1, focus.0, focus.1);
+        self.ends = Some((anchor, focus));
     }
 
     /// The selected text, a line for each block it spans.
@@ -263,6 +303,25 @@ impl Page {
         }
         changed
     }
+}
+
+/// Where the selected text is, in physical pixels on the page.
+fn selection_rects(doc: &HtmlDocument, scale: f64) -> Vec<Rect> {
+    let mut rects = Vec::new();
+    for (id, start, end) in doc.get_text_selection_ranges() {
+        let Some(node) = doc.get_node(id) else { continue };
+        let Some(text) = node.element_data().and_then(|element| element.inline_layout_data.as_ref()) else { continue };
+        let at = node.absolute_position(0.0, 0.0);
+        let layout = node.final_layout();
+        let x = f64::from(at.x + layout.border.left + layout.padding.left) * scale;
+        let y = f64::from(at.y + layout.border.top + layout.padding.top + text.block_offset) * scale;
+        let from = Cursor::from_byte_index(&text.layout, start, Affinity::Downstream);
+        let to = Cursor::from_byte_index(&text.layout, end, Affinity::Downstream);
+        Selection::new(from, to).geometry_with(&text.layout, |rect, _| {
+            rects.push(Rect::new(x + rect.x0, y + rect.y0, x + rect.x1, y + rect.y1));
+        });
+    }
+    rects
 }
 
 /// The word around byte `at` of `text`, or the one character there if it
@@ -335,7 +394,7 @@ mod tests {
 
     fn page(html: &str) -> Page {
         let resources = Resources::new(Engine::idle(), String::new(), String::new(), false, || {});
-        let mut page = Page::new(html, resources);
+        let mut page = Page::new(html, resources, Paper::SENT);
         page.view(400.0, 300.0, 1.0);
         page
     }
@@ -443,6 +502,7 @@ mod tests {
             "<body style=\"margin:0\"><img src=\"https://example.com/a.png\" width=\"100\" height=\"100\">\
              <div style=\"height:3000px\"></div></body>",
             resources,
+            Paper::SENT,
         );
         page.view(400.0, 300.0, 1.0);
         let mut png = std::io::Cursor::new(Vec::new());

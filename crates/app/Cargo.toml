@@ -15,8 +15,10 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = 
 blitz-traits = "=0.3.0-beta.4"
 anyrender = "=0.14.0"
 anyrender_vello_cpu = "=0.18.0"
-# Shapes and colours to paint with, as anyrender takes them.
+# Shapes and colours to paint with, as anyrender takes them, and where
+# selected text lies in Blitz's text layout.
 peniko = "0.6"
+parley = { version = "0.12", default-features = false }
 # Copies text selected in a message; Slint already builds it in.
 arboard = { version = "3.7", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

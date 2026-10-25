@@ -44,14 +44,15 @@ signing in), against the hundreds the new Outlook takes.
   shows their card: write to them, or add them to your contacts.
 - **Original view**: messages are shown as sent, laid out and painted by
   [Blitz](https://github.com/DioxusLabs/blitz) inside the reading pane:
-  about 15-25 MB more than the simplified view, against some 220 MB for
-  WebView2. Only the part in view and a little around it is painted, so
-  scrolling mostly moves what is already drawn. Text is selected with the
-  mouse (a double click takes a word) and copied with Ctrl+C or a right
-  click. Scripts never run; remote pictures, styles and fonts follow the
-  message's setting. The *Original* switch turns it off for the simplified,
-  theme-coloured view, which is also used should Blitz fail on a message;
-  there a right click copies the message's text. To compare with a browser,
+  some 15-25 MB, against some 220 MB for WebView2. Only the part in view
+  and a little around it is painted, so scrolling mostly moves what is
+  already drawn. Text is selected with the mouse (a double click takes a
+  word) and copied with Ctrl+C or a right click. Scripts never run; remote
+  pictures, styles and fonts follow the message's setting. The *Original*
+  switch turns it off for the simplified, theme-coloured view, drawn by
+  Blitz as well so that its text is selected and copied the same way;
+  should Blitz fail on a message, it is drawn natively, and a right click
+  copies the message's text. To compare with a browser,
   `"webview": true` in `config.json` shows the original in WebView2
   instead, on Windows.
 - **Calendar**: day, work week, week and month views across calendars and

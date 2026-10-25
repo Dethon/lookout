@@ -3377,6 +3377,7 @@ dependencies = [
  "lookout-core",
  "memory-stats",
  "open",
+ "parley 0.12.0",
  "peniko",
  "resvg 0.45.1",
  "rfd",

@@ -67,6 +67,8 @@ pub struct MailState {
     page: RefCell<Option<crate::page::Page>>,
     /// The pane's view of the page: width, height, and scroll.
     page_view: Cell<(f32, f32, f32, f32)>,
+    /// Kept open: on X11 what was copied lasts only as long as it is.
+    clipboard: RefCell<Option<arboard::Clipboard>>,
 }
 
 /// The reading pane's WebView2 mode.
@@ -110,6 +112,7 @@ impl MailState {
             original: OriginalState::default(),
             page: RefCell::new(None),
             page_view: Cell::new((0.0, 0.0, 0.0, 0.0)),
+            clipboard: RefCell::new(None),
         }
     }
 }
@@ -218,15 +221,35 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
         app.mail.page_view.set((width, height, x, y));
         paint_page(&app);
     }));
+    mail.on_page_pressed(with_app!(app, |app, x, y| {
+        // Ctrl+C reaches the window's keys, not a box typed in before.
+        if let Some(ui) = app.ui() {
+            ui.invoke_focus_keys();
+        }
+        select_in_page(&app, |page| page.select_from(x, y));
+    }));
+    mail.on_page_dragged(with_app!(app, |app, x, y| select_in_page(&app, |page| page.select_to(x, y))));
+    mail.on_page_double_clicked(with_app!(app, |app, x, y| select_in_page(&app, |page| page.select_word(x, y))));
     mail.on_page_clicked(with_app!(app, |app, x, y| {
-        if let Some(link) = page_link(&app, x, y) {
+        // Not at the end of selecting text.
+        if !page_selected(&app)
+            && let Some(link) = page_link(&app, x, y)
+        {
             open_link(&app, &link);
         }
     }));
-    mail.on_page_over_link({
+    mail.on_page_copy(with_app!(app, |app| {
+        copy_selection(&app);
+    }));
+    mail.on_page_over({
         let weak = Rc::downgrade(app);
-        move |x, y| weak.upgrade().is_some_and(|app| page_link(&app, x, y).is_some())
+        move |x, y| weak.upgrade().map_or(0, |app| page_over(&app, x, y))
     });
+    mail.on_copy_text(with_app!(app, |app| {
+        let Some(ui) = app.ui() else { return };
+        let text = ui.global::<Mail>().get_reader().plain;
+        copy(&app, text.to_string());
+    }));
     mail.on_toggle_original(with_app!(app, |app| toggle_original(&app)));
     mail.on_original_area(with_app!(app, |app, x, y, width, height| {
         app.mail.original.area.set((x, y, width, height));
@@ -744,7 +767,6 @@ fn show_header(app: &App, summary: &MessageSummary) {
     *app.mail.original.page.borrow_mut() = None;
     close_page(app);
     mail.set_attachments(ModelRc::default());
-    mail.set_select_text(false);
     mail.set_reader(Reader {
         open: true,
         loading: true,
@@ -1429,6 +1451,7 @@ fn open_page(app: &Rc<App>, keep_scroll: bool) -> bool {
     };
     *app.mail.page.borrow_mut() = Some(page);
     let mail = ui.global::<Mail>();
+    mail.set_page_selected(false);
     if !keep_scroll {
         let (width, height, _, _) = app.mail.page_view.get();
         app.mail.page_view.set((width, height, 0.0, 0.0));
@@ -1448,10 +1471,12 @@ fn close_page(app: &App) {
         let mail = ui.global::<Mail>();
         mail.set_page(false);
         mail.set_page_picture(slint::Image::default());
+        mail.set_page_selected(false);
     }
 }
 
-/// Lays the page out for the pane and paints what is in view.
+/// Lays the page out for the pane and paints what is in view, unless the
+/// picture shown holds it.
 fn paint_page(app: &Rc<App>) {
     let Some(ui) = app.ui() else { return };
     let (width, height, x, y) = app.mail.page_view.get();
@@ -1464,7 +1489,7 @@ fn paint_page(app: &Rc<App>) {
         let Some(page) = page.as_mut() else { return };
         crate::page::guard("drawing a message", || {
             page.view(width, height, scale);
-            (page.size(), page.paint(x, y))
+            page.paint(x, y).map(|painted| (page.size(), painted))
         })
     };
     show_painted(app, painted);
@@ -1478,26 +1503,27 @@ fn paint_page_loaded(app: &Rc<App>) {
         let Some(page) = page.as_mut() else { return };
         crate::page::guard("loading a message's pictures", || {
             page.load();
-            (width > 0.0 && height > 0.0).then(|| (page.size(), page.paint(x, y)))
+            if width > 0.0 && height > 0.0 { page.paint(x, y).map(|painted| (page.size(), painted)) } else { None }
         })
     };
-    match painted {
-        Some(None) => {}
-        Some(Some(painted)) => show_painted(app, Some(painted)),
-        None => show_painted(app, None),
-    }
+    show_painted(app, painted);
 }
 
-/// Shows a painted page, or the simplified view if Blitz failed.
-fn show_painted(app: &Rc<App>, painted: Option<((f32, f32), slint::Image)>) {
+/// Shows a newly painted page, or the simplified view if Blitz failed.
+fn show_painted(app: &Rc<App>, painted: Option<Option<((f32, f32), crate::page::Painted)>>) {
     let Some(ui) = app.ui() else { return };
     let mail = ui.global::<Mail>();
     match painted {
-        Some(((width, height), picture)) => {
+        Some(Some(((width, height), painted))) => {
             mail.set_page_width(width);
             mail.set_page_height(height);
-            mail.set_page_picture(picture);
+            mail.set_picture_x(painted.x);
+            mail.set_picture_y(painted.y);
+            mail.set_picture_width(painted.width);
+            mail.set_picture_height(painted.height);
+            mail.set_page_picture(painted.picture);
         }
+        Some(None) => {}
         None => {
             drop(ui);
             close_page(app);
@@ -1511,6 +1537,68 @@ fn page_link(app: &App, x: f32, y: f32) -> Option<String> {
     let page = app.mail.page.borrow();
     let page = page.as_ref()?;
     crate::page::guard("finding a link", || page.link_at(x, y)).flatten()
+}
+
+/// What is at `x`, `y` on the page, for the pointer: 1 a link, 2 text,
+/// 0 neither.
+fn page_over(app: &App, x: f32, y: f32) -> i32 {
+    let page = app.mail.page.borrow();
+    let Some(page) = page.as_ref() else { return 0 };
+    crate::page::guard("finding what is under the pointer", || {
+        if page.link_at(x, y).is_some() {
+            1
+        } else if page.text_at(x, y) {
+            2
+        } else {
+            0
+        }
+    })
+    .unwrap_or(0)
+}
+
+/// Changes the page's selection with `change`, and shows it.
+fn select_in_page(app: &Rc<App>, change: impl FnOnce(&mut crate::page::Page) -> bool) {
+    let changed = {
+        let mut page = app.mail.page.borrow_mut();
+        let Some(page) = page.as_mut() else { return };
+        crate::page::guard("selecting text", || change(page))
+    };
+    match changed {
+        Some(true) => paint_page(app),
+        Some(false) => {}
+        None => show_painted(app, None),
+    }
+    if let Some(ui) = app.ui() {
+        ui.global::<Mail>().set_page_selected(page_selected(app));
+    }
+}
+
+fn page_selected(app: &App) -> bool {
+    let page = app.mail.page.borrow();
+    page.as_ref().is_some_and(|page| crate::page::guard("reading the selection", || page.selected_text().is_some()).unwrap_or(false))
+}
+
+/// Copies the text selected on the page. False if there is none.
+fn copy_selection(app: &App) -> bool {
+    let text = {
+        let page = app.mail.page.borrow();
+        page.as_ref().and_then(|page| crate::page::guard("reading the selection", || page.selected_text()).flatten())
+    };
+    let Some(text) = text else { return false };
+    copy(app, text);
+    true
+}
+
+fn copy(app: &App, text: String) {
+    let mut clipboard = app.mail.clipboard.borrow_mut();
+    if clipboard.is_none() {
+        *clipboard = arboard::Clipboard::new().map_err(|e| log::warn!("no clipboard: {e}")).ok();
+    }
+    if let Some(clipboard) = clipboard.as_mut()
+        && let Err(e) = clipboard.set_text(text)
+    {
+        log::warn!("copying: {e}");
+    }
 }
 
 fn request_original(app: &App) {
@@ -1639,6 +1727,7 @@ pub fn key(app: &Rc<App>, key: &str, control: bool, shift: bool) -> bool {
             }
             true
         }
+        ("c", true, false) if copy_selection(app) => true,
         ("a", true, false) if count > 0 => {
             app.mail.list.select_all();
             update_selection_count(app);

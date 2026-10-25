@@ -86,7 +86,6 @@ export global Mail {
     in property <Reader> reader;
     in property <[BodyBlock]> blocks;
     in property <[AttachmentRow]> attachments;
-    in-out property <bool> select-text;
     in-out property <Compose> compose;
     in property <[AttachmentRow]> compose-attachments;
     in property <[Suggestion]> suggestions;
@@ -129,14 +128,24 @@ export global Mail {
     in-out property <bool> original;
     callback toggle-original();
     // The open message as sent, drawn by Blitz: whether it is, what shows of
-    // it, and the size of all of it.
+    // it and where, the size of all of it, and whether text is selected.
     in-out property <bool> page;
     in-out property <image> page-picture;
+    in-out property <length> picture-x;
+    in-out property <length> picture-y;
+    in-out property <length> picture-width;
+    in-out property <length> picture-height;
     in-out property <length> page-width;
     in-out property <length> page-height;
+    in-out property <bool> page-selected;
     callback page-view(length, length, length, length);
+    callback page-pressed(length, length);
+    callback page-dragged(length, length);
+    callback page-double-clicked(length, length);
     callback page-clicked(length, length);
-    pure callback page-over-link(length, length) -> bool;
+    callback page-copy();
+    pure callback page-over(length, length) -> int;
+    callback copy-text();
     // The message as sent goes to WebView2 instead, to compare.
     in-out property <bool> webview;
     callback original-area(length, length, length, length);
@@ -643,7 +652,7 @@ export component MainWindow inherits Window {
     // something should be drawn where it sits.
     property <bool> original-shown: Mail.original && Mail.webview && Shell.page == Page.mail && Shell.accounts.length > 0
         && Mail.reader.open && !Mail.reader.loading && Mail.selection-count <= 1 && !Mail.compose.open
-        && !Mail.select-text && !Shell.settings-open && !Mail.move-open;
+        && !Shell.settings-open && !Mail.move-open;
     changed original-shown => { Mail.original-shown(self.original-shown); }
 
     public function focus-keys() {
@@ -869,7 +878,6 @@ export component MainWindow inherits Window {
                                 reader: Mail.reader;
                                 blocks: Mail.blocks;
                                 attachments: Mail.attachments;
-                                select-text: Mail.select-text;
                                 selection-count: Mail.selection-count;
                                 bulk(action) => { Mail.bulk(action); }
                                 clear-selection => { Mail.clear-selection(); }
@@ -886,14 +894,23 @@ export component MainWindow inherits Window {
                                 toggle-original => { Mail.toggle-original(); }
                                 page: Mail.page;
                                 page-picture: Mail.page-picture;
+                                picture-x: Mail.picture-x;
+                                picture-y: Mail.picture-y;
+                                picture-width: Mail.picture-width;
+                                picture-height: Mail.picture-height;
                                 page-width: Mail.page-width;
                                 page-height: Mail.page-height;
+                                page-selected: Mail.page-selected;
                                 page-view(width, height, x, y) => { Mail.page-view(width, height, x, y); }
+                                page-pressed(x, y) => { Mail.page-pressed(x, y); }
+                                page-dragged(x, y) => { Mail.page-dragged(x, y); }
+                                page-double-clicked(x, y) => { Mail.page-double-clicked(x, y); }
                                 page-clicked(x, y) => { Mail.page-clicked(x, y); }
-                                page-over-link(x, y) => { return Mail.page-over-link(x, y); }
+                                page-copy => { Mail.page-copy(); }
+                                page-over(x, y) => { return Mail.page-over(x, y); }
+                                copy-text => { Mail.copy-text(); }
                                 webview: Mail.webview;
                                 original-area(x, y, width, height) => { Mail.original-area(x, y, width, height); }
-                                toggle-select-text => { Mail.select-text = !Mail.select-text; }
                                 open-attachment(id) => { Mail.open-attachment(id); }
                                 save-attachment(id) => { Mail.save-attachment(id); }
                                 link-clicked(link) => { Mail.link-clicked(link); }

@@ -3363,6 +3363,7 @@ version = "0.5.0"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
+ "arboard",
  "base64 0.22.1",
  "blitz-dom",
  "blitz-html",
@@ -3376,6 +3377,7 @@ dependencies = [
  "lookout-core",
  "memory-stats",
  "open",
+ "peniko",
  "resvg 0.45.1",
  "rfd",
  "slint",

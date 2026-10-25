@@ -1,6 +1,6 @@
 // The mail page: folders, the message list, and the reading pane or composer.
 
-import { ListView, ScrollView, TextEdit, ComboBox, CheckBox, Spinner } from "std-widgets.slint";
+import { ListView, ScrollView, ComboBox, CheckBox, Spinner } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
 import { Panes } from "panes.slint";
 import { Icon, IconButton, ToolButton, Avatar, Divider, VDivider, Field, SearchBox, Tip, MoreButton, MenuEntry } from "widgets.slint";
@@ -524,21 +524,39 @@ export component MessageList inherits Rectangle {
     }
 }
 
-// The message as sent: Blitz paints what is in view into `picture`.
+// The message as sent: Blitz paints what is in view, and a little around
+// it, into `picture`, which scrolls with the page until the view leaves it.
 export component PageView inherits Rectangle {
     in property <image> picture;
+    // Where the picture goes on the page.
+    in property <length> picture-x;
+    in property <length> picture-y;
+    in property <length> picture-width;
+    in property <length> picture-height;
     in property <length> page-width;
     in property <length> page-height;
+    in property <bool> has-selection;
     // The size in view, and how far the page is scrolled.
     callback view(length, length, length, length);
+    // Selecting text: a press, a drag, and a double click for a word.
+    callback pressed(length, length);
+    callback dragged(length, length);
+    callback double-clicked(length, length);
     callback clicked(length, length);
-    pure callback over-link(length, length) -> bool;
+    callback copy();
+    // What is under the pointer: 0 nothing, 1 a link, 2 text.
+    pure callback over(length, length) -> int;
     // Messages bring their own colours, made for a white page.
     background: white;
     function report() {
         root.view(scroll.visible-width, scroll.visible-height, -scroll.content-x, -scroll.content-y);
     }
     init => { root.report(); }
+    // Where the pointer is in the view while selecting, which stays put
+    // when the page scrolls under it.
+    property <length> pointer-y;
+    property <bool> dragging;
+    property <length> edge: 24px;
     scroll := ScrollView {
         width: 100%;
         height: 100%;
@@ -549,18 +567,52 @@ export component PageView inherits Rectangle {
         changed content-x => { root.report(); }
         changed content-y => { root.report(); }
         Image {
-            x: -scroll.content-x;
-            y: -scroll.content-y;
-            width: scroll.visible-width;
-            height: scroll.visible-height;
+            x: root.picture-x;
+            y: root.picture-y;
+            width: root.picture-width;
+            height: root.picture-height;
             source: root.picture;
             image-fit: fill;
         }
-        TouchArea {
+        touch := TouchArea {
             width: scroll.content-width;
             height: scroll.content-height;
-            mouse-cursor: self.has-hover && root.over-link(self.mouse-x, self.mouse-y) ? pointer : default;
+            property <int> under: self.has-hover ? root.over(self.mouse-x, self.mouse-y) : 0;
+            mouse-cursor: under == 1 ? pointer : under == 2 ? text : default;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.dragging = false;
+                    root.pressed(self.mouse-x, self.mouse-y);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.dragging = true;
+                    root.pointer-y = self.mouse-y + scroll.content-y;
+                    root.dragged(self.mouse-x, self.mouse-y);
+                }
+            }
             clicked => { root.clicked(self.pressed-x, self.pressed-y); }
+            double-clicked => { root.double-clicked(self.mouse-x, self.mouse-y); }
+        }
+        ContextMenuArea {
+            Menu {
+                MenuItem {
+                    title: "Copy";
+                    enabled: root.has-selection;
+                    activated => { root.copy(); }
+                }
+            }
+        }
+    }
+    // Held near the top or bottom while selecting, the page scrolls on.
+    Timer {
+        interval: 30ms;
+        running: touch.pressed && root.dragging && (root.pointer-y < root.edge || root.pointer-y > scroll.visible-height - root.edge);
+        triggered => {
+            let step = root.pointer-y < root.edge ? root.pointer-y - root.edge - 4px : root.pointer-y - scroll.visible-height + root.edge + 4px;
+            scroll.content-y = max(scroll.visible-height - scroll.content-height, min(0px, scroll.content-y - step));
+            root.dragged(touch.mouse-x, root.pointer-y - scroll.content-y);
         }
     }
 }
@@ -651,7 +703,6 @@ export component ReadingPane inherits Rectangle {
     in property <Reader> reader;
     in property <[BodyBlock]> blocks;
     in property <[AttachmentRow]> attachments;
-    in property <bool> select-text;
     // Messages picked with Ctrl or Shift; past one, they are acted on together.
     in property <int> selection-count;
     callback bulk(string);
@@ -673,13 +724,23 @@ export component ReadingPane inherits Rectangle {
     in property <image> page-picture;
     in property <length> page-width;
     in property <length> page-height;
+    in property <length> picture-x;
+    in property <length> picture-y;
+    in property <length> picture-width;
+    in property <length> picture-height;
+    in property <bool> page-selected;
     callback page-view(length, length, length, length);
+    callback page-pressed(length, length);
+    callback page-dragged(length, length);
+    callback page-double-clicked(length, length);
     callback page-clicked(length, length);
-    pure callback page-over-link(length, length) -> bool;
+    callback page-copy();
+    pure callback page-over(length, length) -> int;
     in property <bool> webview;
     // Where the WebView2 panel goes, in window coordinates.
     callback original-area(length, length, length, length);
-    callback toggle-select-text();
+    // Copies the whole message, from the simplified view.
+    callback copy-text();
     callback open-attachment(string);
     callback save-attachment(string);
     callback link-clicked(string);
@@ -826,12 +887,6 @@ export component ReadingPane inherits Rectangle {
                 clicked => { root.toggle-read(); }
             }
             if root.tier > 0: IconButton {
-                icon: Icons.select-text;
-                tooltip: "Select text to copy";
-                active: root.select-text;
-                clicked => { root.toggle-select-text(); }
-            }
-            if root.tier > 0: IconButton {
                 icon: Panes.reading-only ? Icons.exit-full-view : Icons.full-view;
                 tooltip: Panes.reading-only ? "Show folders and messages (Esc)" : "Read in full window";
                 active: Panes.reading-only;
@@ -841,13 +896,11 @@ export component ReadingPane inherits Rectangle {
                 entries: [
                     { id: "move", icon: Icons.move, label: "Move to folder" },
                     { id: "read", icon: root.reader.unread ? Icons.mail-open : Icons.mail, label: root.reader.unread ? "Mark as read" : "Mark as unread" },
-                    { id: "select", icon: Icons.select-text, label: root.select-text ? "Stop selecting text" : "Select text to copy" },
                     { id: "full", icon: Icons.full-view, label: Panes.reading-only ? "Show folders and messages" : "Read in full window" },
                 ];
                 activated(id) => {
                     if (id == "move") { root.move(); }
                     if (id == "read") { root.toggle-read(); }
-                    if (id == "select") { root.toggle-select-text(); }
                     if (id == "full") { Panes.reading-only = !Panes.reading-only; }
                 }
             }
@@ -1103,16 +1156,25 @@ export component ReadingPane inherits Rectangle {
                 indeterminate: true;
             }
         }
-        if root.original && root.page && !root.select-text: PageView {
+        if root.original && root.page: PageView {
             vertical-stretch: 1;
             picture: root.page-picture;
+            picture-x: root.picture-x;
+            picture-y: root.picture-y;
+            picture-width: root.picture-width;
+            picture-height: root.picture-height;
             page-width: root.page-width;
             page-height: root.page-height;
+            has-selection: root.page-selected;
             view(width, height, x, y) => { root.page-view(width, height, x, y); }
+            pressed(x, y) => { root.page-pressed(x, y); }
+            dragged(x, y) => { root.page-dragged(x, y); }
+            double-clicked(x, y) => { root.page-double-clicked(x, y); }
             clicked(x, y) => { root.page-clicked(x, y); }
-            over-link(x, y) => { return root.page-over-link(x, y); }
+            copy => { root.page-copy(); }
+            over(x, y) => { return root.page-over(x, y); }
         }
-        if root.original && root.webview && !root.select-text: web-area := Rectangle {
+        if root.original && root.webview: web-area := Rectangle {
             vertical-stretch: 1;
             background: Theme.surface;
             Text {
@@ -1127,16 +1189,18 @@ export component ReadingPane inherits Rectangle {
             changed width => { root.original-area(self.left, self.top, self.width, self.height); }
             changed height => { root.original-area(self.left, self.top, self.width, self.height); }
         }
-        if !root.reader.loading && !root.select-text && !(root.original && (root.page || root.webview)): BodyView {
+        if !root.reader.loading && !(root.original && (root.page || root.webview)): BodyView {
             blocks: root.blocks;
             vertical-stretch: 1;
             link-clicked(link) => { root.link-clicked(link); }
-        }
-        if !root.reader.loading && root.select-text: TextEdit {
-            text: root.reader.plain;
-            read-only: true;
-            wrap: word-wrap;
-            vertical-stretch: 1;
+            ContextMenuArea {
+                Menu {
+                    MenuItem {
+                        title: "Copy text";
+                        activated => { root.copy-text(); }
+                    }
+                }
+            }
         }
         if root.reader.truncated && !(root.original && root.page): Text {
             text: "This message is long; open the original to see all of it.";

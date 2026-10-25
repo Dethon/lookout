@@ -1,16 +1,17 @@
 import { ListView, CheckBox, Switch, LineEdit, Spinner, Palette, TextEdit } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip } from "widgets.slint";
+import { Panes } from "panes.slint";
+import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter } from "widgets.slint";
 import {
     Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
     ContactRow, ContactView, ContactEditor,
 } from "types.slint";
-import { FolderPane, MessageList, ReadingPane, ComposePane } from "mail.slint";
+import { FolderPane, FolderStrip, MessageList, ReadingPane, ComposePane } from "mail.slint";
 import { CalendarSidebar, CalendarView, EventDetailDialog, EventEditorDialog } from "calendar.slint";
 import { PeopleView, ContactEditorDialog } from "people.slint";
 
-export { Palette, Theme, Icons, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose,
+export { Palette, Theme, Icons, Panes, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
     ContactRow, ContactView, ContactEditor }
 
@@ -69,6 +70,8 @@ export global AppUpdate {
 
 export global Mail {
     in property <[FolderRow]> folders;
+    // What the folder strip shows while the pane is put away.
+    in property <[FolderRow]> strip;
     in property <string> selected-account;
     in property <string> selected-folder;
     in property <[MessageRow]> messages;
@@ -322,215 +325,221 @@ component UpdateBanner inherits Rectangle {
 
 component SettingsDialog inherits Overlay {
     card-width: 520px;
+    // Scrolls when the window is shorter than all of it.
+    card-height: body.preferred-height;
     dismissed => { Shell.settings-open = false; }
-    VerticalLayout {
-        padding: 20px;
-        spacing: 12px;
-        HorizontalLayout {
+    Flickable {
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            width: parent.width;
+            padding: 20px;
+            spacing: 12px;
+            HorizontalLayout {
+                Text {
+                    text: "Settings";
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: Icons.close;
+                    tooltip: "Close";
+                    clicked => { Shell.settings-open = false; }
+                }
+            }
             Text {
-                text: "Settings";
-                font-size: 18px;
+                text: "Accounts";
                 font-weight: 600;
                 color: Theme.text;
-                horizontal-stretch: 1;
             }
-            IconButton {
-                icon: Icons.close;
-                tooltip: "Close";
-                clicked => { Shell.settings-open = false; }
-            }
-        }
-        Text {
-            text: "Accounts";
-            font-weight: 600;
-            color: Theme.text;
-        }
-        for account in Shell.accounts: HorizontalLayout {
-            spacing: 8px;
-            height: 36px;
-            Icon {
-                y: (parent.height - self.height) / 2;
-                icon: Icons.person;
-            }
-            VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
-                Text {
-                    text: account.name;
-                    color: Theme.text;
-                    overflow: elide;
+            for account in Shell.accounts: HorizontalLayout {
+                spacing: 8px;
+                height: 36px;
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.person;
                 }
-                Text {
-                    text: account.email;
-                    color: Theme.text-muted;
-                    font-size: Theme.small;
-                    overflow: elide;
-                }
-            }
-            ToolButton {
-                y: (parent.height - self.height) / 2;
-                label: "Remove";
-                tint: Theme.danger;
-                clicked => { Shell.remove-account(account.id); }
-            }
-        }
-        for account in Shell.accounts: VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: Shell.accounts.length > 1 ? "Signature for " + account.email : "Signature";
-                color: Theme.text-muted;
-                font-size: Theme.small;
-            }
-            TextEdit {
-                height: 72px;
-                text: account.signature;
-                wrap: word-wrap;
-                placeholder-text: "Added below new messages and replies";
-                edited(text) => { Shell.signature-edited(account.id, text); }
-            }
-        }
-        HorizontalLayout {
-            alignment: start;
-            ToolButton {
-                icon: Icons.add;
-                label: Shell.signing-in ? "Waiting for the browser…" : "Add account";
-                enabled: !Shell.signing-in;
-                clicked => { Shell.add-account(); }
-            }
-        }
-        Divider { }
-        CheckBox {
-            text: "Load pictures from the internet without asking";
-            checked <=> Shell.load-images;
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Dark theme";
-                color: Theme.text;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Switch {
-                checked: Theme.dark;
-                toggled => { Shell.dark-changed(self.checked); }
-            }
-        }
-        VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: "Application (client) ID, to use your own app registration";
-                color: Theme.text-muted;
-                font-size: Theme.small;
-            }
-            LineEdit {
-                text <=> Shell.client-id;
-                placeholder-text: "Lookout's own";
-            }
-        }
-        if Shell.desktop: Divider { }
-        if Shell.desktop: HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Show new mail in Windows notifications";
-                color: Theme.text;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Switch {
-                checked: Shell.notify-new-mail;
-                toggled => { Shell.notify-new-mail-changed(self.checked); }
-            }
-        }
-        if Shell.desktop: HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Keep running in the notification area when closed";
-                color: Theme.text;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Switch {
-                checked: Shell.close-to-tray;
-                toggled => { Shell.close-to-tray-changed(self.checked); }
-            }
-        }
-        if Shell.desktop: HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Start Lookout when you sign in to Windows";
-                color: Theme.text;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Switch {
-                checked: Shell.start-with-windows;
-                toggled => { Shell.start-with-windows-changed(self.checked); }
-            }
-        }
-        Divider { }
-        HorizontalLayout {
-            spacing: 8px;
-            VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
-                Text {
-                    text: "Updates";
-                    color: Theme.text;
-                }
-                Text {
-                    text: AppUpdate.checking ? "Checking for updates…" : AppUpdate.status;
-                    color: Theme.text-muted;
-                    font-size: Theme.small;
-                    overflow: elide;
-                }
-            }
-            if AppUpdate.version != "": ToolButton {
-                y: (parent.height - self.height) / 2;
-                label: AppUpdate.ready ? "Restart to update" : "Download " + AppUpdate.version;
-                primary: true;
-                clicked => {
-                    if (AppUpdate.ready) {
-                        AppUpdate.install();
-                    } else {
-                        AppUpdate.open-page();
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: account.name;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: account.email;
+                        color: Theme.text-muted;
+                        font-size: Theme.small;
+                        overflow: elide;
                     }
                 }
+                ToolButton {
+                    y: (parent.height - self.height) / 2;
+                    label: "Remove";
+                    tint: Theme.danger;
+                    clicked => { Shell.remove-account(account.id); }
+                }
             }
-            ToolButton {
-                y: (parent.height - self.height) / 2;
-                label: "Check now";
-                enabled: !AppUpdate.checking;
-                clicked => { AppUpdate.check(); }
+            for account in Shell.accounts: VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: Shell.accounts.length > 1 ? "Signature for " + account.email : "Signature";
+                    color: Theme.text-muted;
+                    font-size: Theme.small;
+                }
+                TextEdit {
+                    height: 72px;
+                    text: account.signature;
+                    wrap: word-wrap;
+                    placeholder-text: "Added below new messages and replies";
+                    edited(text) => { Shell.signature-edited(account.id, text); }
+                }
             }
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Check for updates automatically";
-                color: Theme.text;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
+            HorizontalLayout {
+                alignment: start;
+                ToolButton {
+                    icon: Icons.add;
+                    label: Shell.signing-in ? "Waiting for the browser…" : "Add account";
+                    enabled: !Shell.signing-in;
+                    clicked => { Shell.add-account(); }
+                }
             }
-            Switch {
-                checked: AppUpdate.automatic;
-                toggled => { AppUpdate.automatic-changed(self.checked); }
+            Divider { }
+            CheckBox {
+                text: "Load pictures from the internet without asking";
+                checked <=> Shell.load-images;
             }
-        }
-        HorizontalLayout {
-            Text {
-                text: "Lookout " + Shell.version;
-                color: Theme.text-faint;
-                font-size: Theme.small;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Dark theme";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Theme.dark;
+                    toggled => { Shell.dark-changed(self.checked); }
+                }
             }
-            ToolButton {
-                label: "Save";
-                primary: true;
-                clicked => {
-                    Shell.save-settings();
-                    Shell.settings-open = false;
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "Application (client) ID, to use your own app registration";
+                    color: Theme.text-muted;
+                    font-size: Theme.small;
+                }
+                LineEdit {
+                    text <=> Shell.client-id;
+                    placeholder-text: "Lookout's own";
+                }
+            }
+            if Shell.desktop: Divider { }
+            if Shell.desktop: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Show new mail in Windows notifications";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Shell.notify-new-mail;
+                    toggled => { Shell.notify-new-mail-changed(self.checked); }
+                }
+            }
+            if Shell.desktop: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Keep running in the notification area when closed";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Shell.close-to-tray;
+                    toggled => { Shell.close-to-tray-changed(self.checked); }
+                }
+            }
+            if Shell.desktop: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Start Lookout when you sign in to Windows";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Shell.start-with-windows;
+                    toggled => { Shell.start-with-windows-changed(self.checked); }
+                }
+            }
+            Divider { }
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Updates";
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: AppUpdate.checking ? "Checking for updates…" : AppUpdate.status;
+                        color: Theme.text-muted;
+                        font-size: Theme.small;
+                        overflow: elide;
+                    }
+                }
+                if AppUpdate.version != "": ToolButton {
+                    y: (parent.height - self.height) / 2;
+                    label: AppUpdate.ready ? "Restart to update" : "Download " + AppUpdate.version;
+                    primary: true;
+                    clicked => {
+                        if (AppUpdate.ready) {
+                            AppUpdate.install();
+                        } else {
+                            AppUpdate.open-page();
+                        }
+                    }
+                }
+                ToolButton {
+                    y: (parent.height - self.height) / 2;
+                    label: "Check now";
+                    enabled: !AppUpdate.checking;
+                    clicked => { AppUpdate.check(); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Check for updates automatically";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: AppUpdate.automatic;
+                    toggled => { AppUpdate.automatic-changed(self.checked); }
+                }
+            }
+            HorizontalLayout {
+                Text {
+                    text: "Lookout " + Shell.version;
+                    color: Theme.text-faint;
+                    font-size: Theme.small;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                ToolButton {
+                    label: "Save";
+                    primary: true;
+                    clicked => {
+                        Shell.save-settings();
+                        Shell.settings-open = false;
+                    }
                 }
             }
         }
@@ -617,6 +626,42 @@ export component MainWindow inherits Window {
         keys.focus();
     }
 
+    // The mail page's width, beside the rail, and the least the reading
+    // pane is given before the folder pane gives way to its strip.
+    property <length> page-width: root.width - 52px;
+    property <length> reading-min: 400px;
+    property <length> strip-width: 49px;
+    property <length> list-min: 280px;
+    property <bool> folders-inline: !Panes.folders-collapsed && root.page-width >= Panes.folders + 1px + root.list-min + 1px + root.reading-min;
+    property <length> folders-room: Panes.reading-only ? 0px : root.folders-inline ? Panes.folders + 1px : root.strip-width;
+    property <length> list-width: max(root.list-min, min(Panes.list, root.page-width - root.folders-room - 1px - root.reading-min));
+    changed folders-inline => { Panes.folders-flyout = false; }
+    property <bool> calendars-inline: !Panes.calendars-collapsed && root.page-width >= 860px;
+    changed calendars-inline => { Panes.calendars-flyout = false; }
+
+    function show-folders() {
+        if (Panes.folders-collapsed) {
+            Panes.folders-collapsed = false;
+            Panes.changed();
+        }
+        if (!root.folders-inline) {
+            Panes.folders-flyout = true;
+        }
+    }
+
+    function toggle-folders() {
+        if (Panes.reading-only) {
+            Panes.reading-only = false;
+        } else if (root.folders-inline) {
+            Panes.folders-collapsed = true;
+            Panes.changed();
+        } else if (Panes.folders-flyout) {
+            Panes.folders-flyout = false;
+        } else {
+            root.show-folders();
+        }
+    }
+
 
     keys := FocusScope {
         key-pressed(event) => {
@@ -624,6 +669,13 @@ export component MainWindow inherits Window {
                 if (Shell.settings-open) { Shell.settings-open = false; return accept; }
                 if (Mail.move-open) { Mail.move-open = false; return accept; }
                 if (Cal.detail.open) { Cal.close-event(); return accept; }
+                if (Panes.folders-flyout) { Panes.folders-flyout = false; return accept; }
+                if (Panes.calendars-flyout) { Panes.calendars-flyout = false; return accept; }
+                if (Panes.reading-only && Shell.page == Page.mail) { Panes.reading-only = false; return accept; }
+            }
+            if (event.modifiers.control && !event.modifiers.shift && (event.text == "b" || event.text == "B") && Shell.page == Page.mail) {
+                root.toggle-folders();
+                return accept;
             }
             if (event.modifiers.control && (event.text == "e" || event.text == "E") && Shell.page == Page.mail) {
                 Mail.focus-search-request += 1;
@@ -696,156 +748,268 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if Shell.accounts.length == 0: Welcome {
+                // Placed rather than laid out: what the pages hold changes
+                // with the width they are given, which mustn't depend on it.
+                Rectangle {
                     horizontal-stretch: 1;
-                }
+                    if Shell.accounts.length == 0: Welcome {
+                        width: parent.width;
+                        height: parent.height;
+                    }
 
-                if Shell.accounts.length > 0 && Shell.page == Page.mail: HorizontalLayout {
-                    horizontal-stretch: 1;
-                    FolderPane {
-                        width: 256px;
-                        folders: Mail.folders;
-                        selected-account: Mail.selected-account;
-                        selected-folder: Mail.selected-folder;
-                        new-message => { Mail.new-message(); }
-                        folder-clicked(account, folder) => {
-                            Mail.folder-clicked(account, folder);
-                            keys.focus();
+                    if Shell.accounts.length > 0 && Shell.page == Page.mail: Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        HorizontalLayout {
+                            if !Panes.reading-only && root.folders-inline: FolderPane {
+                                width: Panes.folders;
+                                folders: Mail.folders;
+                                selected-account: Mail.selected-account;
+                                selected-folder: Mail.selected-folder;
+                                new-message => { Mail.new-message(); }
+                                folder-clicked(account, folder) => {
+                                    Mail.folder-clicked(account, folder);
+                                    keys.focus();
+                                }
+                                add-account => { Shell.add-account(); }
+                                dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
+                                toggle-expanded(account, folder) => { Mail.toggle-expanded(account, folder); }
+                                toggle-favourite(account, folder) => { Mail.toggle-favourite(account, folder); }
+                                collapse => {
+                                    Panes.folders-collapsed = true;
+                                    Panes.changed();
+                                }
+                            }
+                            if !Panes.reading-only && root.folders-inline: Splitter {
+                                size: Panes.folders;
+                                minimum: 180px;
+                                maximum: min(440px, root.page-width - root.list-min - root.reading-min - 2px);
+                                resized(width) => { Panes.folders = width; }
+                                released => { Panes.changed(); }
+                            }
+                            if !Panes.reading-only && !root.folders-inline: FolderStrip {
+                                folders: Mail.strip;
+                                selected-account: Mail.selected-account;
+                                selected-folder: Mail.selected-folder;
+                                expand => { root.show-folders(); }
+                                new-message => { Mail.new-message(); }
+                                folder-clicked(account, folder) => {
+                                    Mail.folder-clicked(account, folder);
+                                    keys.focus();
+                                }
+                                dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
+                            }
+                            if !Panes.reading-only && !root.folders-inline: VDivider { }
+                            if !Panes.reading-only: MessageList {
+                                width: root.list-width;
+                                messages: Mail.messages;
+                                title: Mail.list-title;
+                                selected: Mail.selected;
+                                searching: Mail.searching;
+                                unread-only: Mail.unread-only;
+                                busy: Mail.busy;
+                                search-text <=> Mail.search-text;
+                                focus-request: Mail.focus-search-request;
+                                empty-text: Mail.searching ? "No messages found" : "Nothing here";
+                                select(index, control, shift) => {
+                                    Mail.select(index, control, shift);
+                                    keys.focus();
+                                }
+                                drag-started(index) => { Mail.drag-started(index); }
+                                row-clicked(index) => { Mail.row-clicked(index); }
+                                drag-payload: Mail.drag-payload;
+                                search(text) => { Mail.search(text); }
+                                search-server => { Mail.search-server(); }
+                                toggle-unread-only => { Mail.toggle-unread-only(); }
+                                toggle-flag(index) => { Mail.toggle-flag-at(index); }
+                                toggle-read(index) => { Mail.toggle-read-at(index); }
+                                delete-at(index) => { Mail.delete-at(index); }
+                                archive-at(index) => { Mail.archive-at(index); }
+                                move-at(index) => { Mail.move-at(index); }
+                                scrolled-to-end => { Mail.load-more(); }
+                            }
+                            if !Panes.reading-only: Splitter {
+                                size: root.list-width;
+                                minimum: root.list-min;
+                                maximum: root.page-width - root.folders-room - root.reading-min - 1px;
+                                resized(width) => { Panes.list = width; }
+                                released => {
+                                    Panes.list = root.list-width;
+                                    Panes.changed();
+                                }
+                            }
+                            if !Mail.compose.open: ReadingPane {
+                                horizontal-stretch: 1;
+                                reader: Mail.reader;
+                                blocks: Mail.blocks;
+                                attachments: Mail.attachments;
+                                select-text: Mail.select-text;
+                                selection-count: Mail.selection-count;
+                                bulk(action) => { Mail.bulk(action); }
+                                clear-selection => { Mail.clear-selection(); }
+                                reply => { Mail.reply(1); }
+                                reply-all => { Mail.reply(2); }
+                                forward => { Mail.reply(3); }
+                                delete => { Mail.delete-at(Mail.selected); }
+                                archive => { Mail.archive-at(Mail.selected); }
+                                move => { Mail.move-at(Mail.selected); }
+                                toggle-flag => { Mail.toggle-flag-at(Mail.selected); }
+                                toggle-read => { Mail.toggle-read-at(Mail.selected); }
+                                show-images => { Mail.show-images(); }
+                                original: Mail.original;
+                                toggle-original => { Mail.toggle-original(); }
+                                page: Mail.page;
+                                page-picture: Mail.page-picture;
+                                page-width: Mail.page-width;
+                                page-height: Mail.page-height;
+                                page-view(width, height, x, y) => { Mail.page-view(width, height, x, y); }
+                                page-clicked(x, y) => { Mail.page-clicked(x, y); }
+                                page-over-link(x, y) => { return Mail.page-over-link(x, y); }
+                                webview: Mail.webview;
+                                original-area(x, y, width, height) => { Mail.original-area(x, y, width, height); }
+                                toggle-select-text => { Mail.select-text = !Mail.select-text; }
+                                open-attachment(id) => { Mail.open-attachment(id); }
+                                save-attachment(id) => { Mail.save-attachment(id); }
+                                link-clicked(link) => { Mail.link-clicked(link); }
+                                edit-draft => { Mail.edit-draft(); }
+                            }
+                            if Mail.compose.open: ComposePane {
+                                horizontal-stretch: 1;
+                                compose <=> Mail.compose;
+                                compact: (Panes.reading-only ? root.page-width : root.page-width - root.folders-room - root.list-width - 1px) < 560px;
+                                focus-request: Mail.focus-compose-request;
+                                account-labels: Shell.account-labels;
+                                attachments: Mail.compose-attachments;
+                                suggestions: Mail.suggestions;
+                                suggestion-field: Mail.suggestion-field;
+                                send(compose) => { Mail.send(compose); }
+                                save-draft(compose) => { Mail.save-draft(compose); }
+                                discard => { Mail.discard(); }
+                                attach => { Mail.attach(); }
+                                remove-attachment(id) => { Mail.remove-attachment(id); }
+                                address-typed(field, text) => { Mail.address-typed(field, text); }
+                                suggestion-picked(field, current, picked) => { Mail.suggestion-picked(field, current, picked) }
+                                format(kind, text, anchor, cursor) => { Mail.format(kind, text, anchor, cursor) }
+                                preview(text) => { Mail.preview(text); }
+                                preview-blocks: Mail.preview-blocks;
+                            }
                         }
-                        add-account => { Shell.add-account(); }
-                        dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
-                        toggle-expanded(account, folder) => { Mail.toggle-expanded(account, folder); }
-                        toggle-favourite(account, folder) => { Mail.toggle-favourite(account, folder); }
-                    }
-                    VDivider { }
-                    list := MessageList {
-                        width: 380px;
-                        messages: Mail.messages;
-                        title: Mail.list-title;
-                        selected: Mail.selected;
-                        searching: Mail.searching;
-                        unread-only: Mail.unread-only;
-                        busy: Mail.busy;
-                        search-text <=> Mail.search-text;
-                        focus-request: Mail.focus-search-request;
-                        empty-text: Mail.searching ? "No messages found" : "Nothing here";
-                        select(index, control, shift) => {
-                            Mail.select(index, control, shift);
-                            keys.focus();
+                        // The folder pane over the list, while the window is too
+                        // narrow for it beside.
+                        if Panes.folders-flyout && !root.folders-inline && !Panes.reading-only: Rectangle {
+                            background: Theme.overlay.with-alpha(0.12);
+                            TouchArea {
+                                clicked => { Panes.folders-flyout = false; }
+                            }
+                            FolderPane {
+                                x: 0;
+                                width: min(Panes.folders, parent.width - 48px);
+                                drop-shadow-blur: 16px;
+                                drop-shadow-color: #00000040;
+                                folders: Mail.folders;
+                                selected-account: Mail.selected-account;
+                                selected-folder: Mail.selected-folder;
+                                new-message => {
+                                    Panes.folders-flyout = false;
+                                    Mail.new-message();
+                                }
+                                folder-clicked(account, folder) => {
+                                    Panes.folders-flyout = false;
+                                    Mail.folder-clicked(account, folder);
+                                    keys.focus();
+                                }
+                                add-account => { Shell.add-account(); }
+                                dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
+                                toggle-expanded(account, folder) => { Mail.toggle-expanded(account, folder); }
+                                toggle-favourite(account, folder) => { Mail.toggle-favourite(account, folder); }
+                                collapse => { Panes.folders-flyout = false; }
+                            }
                         }
-                        drag-started(index) => { Mail.drag-started(index); }
-                        row-clicked(index) => { Mail.row-clicked(index); }
-                        drag-payload: Mail.drag-payload;
-                        search(text) => { Mail.search(text); }
-                        search-server => { Mail.search-server(); }
-                        toggle-unread-only => { Mail.toggle-unread-only(); }
-                        toggle-flag(index) => { Mail.toggle-flag-at(index); }
-                        toggle-read(index) => { Mail.toggle-read-at(index); }
-                        delete-at(index) => { Mail.delete-at(index); }
-                        archive-at(index) => { Mail.archive-at(index); }
-                        move-at(index) => { Mail.move-at(index); }
-                        scrolled-to-end => { Mail.load-more(); }
                     }
-                    VDivider { }
-                    if !Mail.compose.open: ReadingPane {
-                        horizontal-stretch: 1;
-                        reader: Mail.reader;
-                        blocks: Mail.blocks;
-                        attachments: Mail.attachments;
-                        select-text: Mail.select-text;
-                        selection-count: Mail.selection-count;
-                        bulk(action) => { Mail.bulk(action); }
-                        clear-selection => { Mail.clear-selection(); }
-                        reply => { Mail.reply(1); }
-                        reply-all => { Mail.reply(2); }
-                        forward => { Mail.reply(3); }
-                        delete => { Mail.delete-at(Mail.selected); }
-                        archive => { Mail.archive-at(Mail.selected); }
-                        move => { Mail.move-at(Mail.selected); }
-                        toggle-flag => { Mail.toggle-flag-at(Mail.selected); }
-                        toggle-read => { Mail.toggle-read-at(Mail.selected); }
-                        show-images => { Mail.show-images(); }
-                        original: Mail.original;
-                        toggle-original => { Mail.toggle-original(); }
-                        page: Mail.page;
-                        page-picture: Mail.page-picture;
-                        page-width: Mail.page-width;
-                        page-height: Mail.page-height;
-                        page-view(width, height, x, y) => { Mail.page-view(width, height, x, y); }
-                        page-clicked(x, y) => { Mail.page-clicked(x, y); }
-                        page-over-link(x, y) => { return Mail.page-over-link(x, y); }
-                        webview: Mail.webview;
-                        original-area(x, y, width, height) => { Mail.original-area(x, y, width, height); }
-                        toggle-select-text => { Mail.select-text = !Mail.select-text; }
-                        open-attachment(id) => { Mail.open-attachment(id); }
-                        save-attachment(id) => { Mail.save-attachment(id); }
-                        link-clicked(link) => { Mail.link-clicked(link); }
-                        edit-draft => { Mail.edit-draft(); }
-                    }
-                    if Mail.compose.open: ComposePane {
-                        horizontal-stretch: 1;
-                        compose <=> Mail.compose;
-                        focus-request: Mail.focus-compose-request;
-                        account-labels: Shell.account-labels;
-                        attachments: Mail.compose-attachments;
-                        suggestions: Mail.suggestions;
-                        suggestion-field: Mail.suggestion-field;
-                        send(compose) => { Mail.send(compose); }
-                        save-draft(compose) => { Mail.save-draft(compose); }
-                        discard => { Mail.discard(); }
-                        attach => { Mail.attach(); }
-                        remove-attachment(id) => { Mail.remove-attachment(id); }
-                        address-typed(field, text) => { Mail.address-typed(field, text); }
-                        suggestion-picked(field, current, picked) => { Mail.suggestion-picked(field, current, picked) }
-                        format(kind, text, anchor, cursor) => { Mail.format(kind, text, anchor, cursor) }
-                        preview(text) => { Mail.preview(text); }
-                        preview-blocks: Mail.preview-blocks;
-                    }
-                }
 
-                if Shell.accounts.length > 0 && Shell.page == Page.calendar: HorizontalLayout {
-                    horizontal-stretch: 1;
-                    CalendarSidebar {
-                        width: 230px;
-                        calendars: Cal.calendars;
-                        new-event => { Cal.new-event(); }
-                        toggle-calendar(account, id, shown) => { Cal.toggle-calendar(account, id, shown); }
+                    if Shell.accounts.length > 0 && Shell.page == Page.calendar: Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        HorizontalLayout {
+                            if root.calendars-inline: CalendarSidebar {
+                                width: 230px;
+                                calendars: Cal.calendars;
+                                new-event => { Cal.new-event(); }
+                                toggle-calendar(account, id, shown) => { Cal.toggle-calendar(account, id, shown); }
+                                collapse => {
+                                    Panes.calendars-collapsed = true;
+                                    Panes.changed();
+                                }
+                            }
+                            if root.calendars-inline: VDivider { }
+                            CalendarView {
+                                horizontal-stretch: 1;
+                                new-event => { Cal.new-event(); }
+                                compact: root.page-width - (root.calendars-inline ? 231px : 0px) < 640px;
+                                sidebar-shown: root.calendars-inline;
+                                show-sidebar => {
+                                    if (Panes.calendars-collapsed) {
+                                        Panes.calendars-collapsed = false;
+                                        Panes.changed();
+                                    }
+                                    if (!root.calendars-inline) {
+                                        Panes.calendars-flyout = true;
+                                    }
+                                }
+                                title: Cal.title;
+                                mode: Cal.mode;
+                                days: Cal.days;
+                                events: Cal.events;
+                                all-day: Cal.all-day;
+                                all-day-rows: Cal.all-day-rows;
+                                month: Cal.month;
+                                now-fraction: Cal.now-fraction;
+                                now-day: Cal.now-day;
+                                busy: Cal.busy;
+                                today => { Cal.today(); }
+                                previous => { Cal.previous(); }
+                                next => { Cal.next(); }
+                                set-mode(mode) => { Cal.set-mode(mode); }
+                                open-event(account, id) => { Cal.open-event(account, id); }
+                                new-event-at(day, slot) => { Cal.new-event-at(day, slot); }
+                                open-day(day) => { Cal.open-day(day); }
+                            }
+                        }
+                        if Panes.calendars-flyout && !root.calendars-inline: Rectangle {
+                            background: Theme.overlay.with-alpha(0.12);
+                            TouchArea {
+                                clicked => { Panes.calendars-flyout = false; }
+                            }
+                            CalendarSidebar {
+                                x: 0;
+                                width: 230px;
+                                drop-shadow-blur: 16px;
+                                drop-shadow-color: #00000040;
+                                calendars: Cal.calendars;
+                                new-event => {
+                                    Panes.calendars-flyout = false;
+                                    Cal.new-event();
+                                }
+                                toggle-calendar(account, id, shown) => { Cal.toggle-calendar(account, id, shown); }
+                                collapse => { Panes.calendars-flyout = false; }
+                            }
+                        }
                     }
-                    VDivider { }
-                    CalendarView {
-                        horizontal-stretch: 1;
-                        title: Cal.title;
-                        mode: Cal.mode;
-                        days: Cal.days;
-                        events: Cal.events;
-                        all-day: Cal.all-day;
-                        all-day-rows: Cal.all-day-rows;
-                        month: Cal.month;
-                        now-fraction: Cal.now-fraction;
-                        now-day: Cal.now-day;
-                        busy: Cal.busy;
-                        today => { Cal.today(); }
-                        previous => { Cal.previous(); }
-                        next => { Cal.next(); }
-                        set-mode(mode) => { Cal.set-mode(mode); }
-                        open-event(account, id) => { Cal.open-event(account, id); }
-                        new-event-at(day, slot) => { Cal.new-event-at(day, slot); }
-                        open-day(day) => { Cal.open-day(day); }
-                    }
-                }
 
-                if Shell.accounts.length > 0 && Shell.page == Page.people: PeopleView {
-                    horizontal-stretch: 1;
-                    contacts: People.contacts;
-                    selected: People.selected;
-                    contact: People.contact;
-                    filter <=> People.filter;
-                    filter-edited(text) => { People.filter-edited(text); }
-                    select(index) => { People.select(index); }
-                    new-contact => { People.new-contact(); }
-                    edit-contact => { People.edit-contact(); }
-                    delete-contact => { People.delete-contact(); }
-                    email(address) => { People.email(address); }
+                    if Shell.accounts.length > 0 && Shell.page == Page.people: PeopleView {
+                        width: parent.width;
+                        height: parent.height;
+                        contacts: People.contacts;
+                        selected: People.selected;
+                        contact: People.contact;
+                        filter <=> People.filter;
+                        filter-edited(text) => { People.filter-edited(text); }
+                        select(index) => { People.select(index); }
+                        new-contact => { People.new-contact(); }
+                        edit-contact => { People.edit-contact(); }
+                        delete-contact => { People.delete-contact(); }
+                        email(address) => { People.email(address); }
+                    }
                 }
             }
             // Status bar.

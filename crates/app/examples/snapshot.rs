@@ -4,9 +4,14 @@
 //!
 //! `SNAPSHOT_PAGE` picks `mail` (the default), `compose`, `calendar`,
 //! `month`, `people`, `welcome` or `settings`; `SNAPSHOT_DARK=1` uses the dark
-//! theme; `SNAPSHOT_CLICK=x,y` clicks there first; `SNAPSHOT_UPDATE=1` shows
-//! a new version ready to install. On the calendar, `SNAPSHOT_EVENT=1` opens
-//! an event and `SNAPSHOT_EDITOR=1` a new one on a read-only calendar.
+//! theme; `SNAPSHOT_CLICK=x,y` clicks there first (`x,y;x,y` one after the
+//! other), `SNAPSHOT_DRAG=x,y,x2` drags from one point to another across and
+//! `SNAPSHOT_HOVER=x,y` leaves the pointer there; `SNAPSHOT_UPDATE=1` shows
+//! a new version ready to install. `SNAPSHOT_COLLAPSED=1` puts the folder
+//! pane and calendars away, `SNAPSHOT_FLYOUT=1` shows the folders over the
+//! list, and `SNAPSHOT_FULL=1` gives the reading pane the whole page. On the
+//! calendar, `SNAPSHOT_EVENT=1` opens an event and `SNAPSHOT_EDITOR=1` a new
+//! one on a read-only calendar.
 
 use std::rc::Rc;
 
@@ -108,6 +113,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         folder("Utilities", icons.get_folder(), 0, 0),
         folder("Very long folder name that elides", icons.get_folder(), 0, 128),
     ])));
+    mail.set_strip(ModelRc::new(VecModel::from(vec![
+        folder("Inbox", icons.get_inbox(), 0, 3),
+        folder("Drafts", icons.get_edit(), 0, 1),
+        folder("Sent Items", icons.get_send(), 0, 0),
+        folder("Archive", icons.get_archive(), 0, 0),
+        folder("Deleted Items", icons.get_delete(), 0, 0),
+        folder("Junk Email", icons.get_junk(), 0, 0),
+    ])));
+    let panes = ui.global::<Panes>();
+    let flag = |name: &str| std::env::var_os(name).is_some();
+    panes.set_folders_collapsed(flag("SNAPSHOT_COLLAPSED"));
+    panes.set_calendars_collapsed(flag("SNAPSHOT_COLLAPSED"));
+    panes.set_folders_flyout(flag("SNAPSHOT_FLYOUT"));
+    panes.set_reading_only(flag("SNAPSHOT_FULL"));
     mail.set_selected_account("a".into());
     mail.set_selected_folder("Inbox".into());
     mail.set_list_title("Inbox".into());
@@ -303,7 +322,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.show()?;
     slint::platform::update_timers_and_animations();
-    if let Some((x, y)) = std::env::var("SNAPSHOT_CLICK").ok().as_deref().and_then(|p| p.split_once(',')) {
+    let clicks = std::env::var("SNAPSHOT_CLICK").unwrap_or_default();
+    for (x, y) in clicks.split(';').filter_map(|point| point.split_once(',')) {
         let position = LogicalPosition::new(x.trim().parse()?, y.trim().parse()?);
         let button = PointerEventButton::Left;
         for event in [
@@ -313,6 +333,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ] {
             ui.window().dispatch_event(event);
         }
+        slint::platform::update_timers_and_animations();
+    }
+    if let Ok(points) = std::env::var("SNAPSHOT_DRAG") {
+        let numbers: Vec<f32> = points.split(',').map(|n| n.trim().parse()).collect::<Result<_, _>>()?;
+        let [x, y, to] = numbers[..] else { return Err("SNAPSHOT_DRAG=x,y,x2".into()) };
+        let button = PointerEventButton::Left;
+        let at = |x: f32| LogicalPosition::new(x, y);
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: at(x) });
+        ui.window().dispatch_event(WindowEvent::PointerPressed { position: at(x), button });
+        for step in 1..=10 {
+            let position = at(x + (to - x) * step as f32 / 10.0);
+            ui.window().dispatch_event(WindowEvent::PointerMoved { position });
+            slint::platform::update_timers_and_animations();
+        }
+        ui.window().dispatch_event(WindowEvent::PointerReleased { position: at(to), button });
+        slint::platform::update_timers_and_animations();
+    }
+    if let Some((x, y)) = std::env::var("SNAPSHOT_HOVER").ok().as_deref().and_then(|p| p.split_once(',')) {
+        let position = LogicalPosition::new(x.trim().parse()?, y.trim().parse()?);
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position });
         slint::platform::update_timers_and_animations();
     }
     let snapshot = ui.window().take_snapshot()?;

@@ -39,6 +39,25 @@ pub struct Config {
     /// New mail in the Inbox is shown in Windows notifications while the
     /// window is in the background.
     pub notify_new_mail: bool,
+    pub panes: Panes,
+}
+
+/// How the window is divided: widths in logical pixels, and the panes the
+/// user put away.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Panes {
+    pub folders: f32,
+    pub folders_collapsed: bool,
+    pub list: f32,
+    pub calendars_collapsed: bool,
+    pub people: f32,
+}
+
+impl Default for Panes {
+    fn default() -> Self {
+        Self { folders: 256.0, folders_collapsed: false, list: 380.0, calendars_collapsed: false, people: 340.0 }
+    }
 }
 
 impl Default for Config {
@@ -56,6 +75,7 @@ impl Default for Config {
             check_for_updates: true,
             close_to_tray: true,
             notify_new_mail: true,
+            panes: Panes::default(),
         }
     }
 }

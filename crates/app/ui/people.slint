@@ -2,7 +2,8 @@
 
 import { ListView, TextEdit, ComboBox } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Icon, IconButton, ToolButton, Avatar, Divider, Field, SearchBox, Overlay } from "widgets.slint";
+import { Icon, IconButton, ToolButton, Avatar, Divider, Field, SearchBox, Overlay, Splitter } from "widgets.slint";
+import { Panes } from "panes.slint";
 import { ContactRow, ContactView, ContactEditor } from "types.slint";
 
 export component PeopleView inherits Rectangle {
@@ -20,7 +21,7 @@ export component PeopleView inherits Rectangle {
 
     HorizontalLayout {
         Rectangle {
-            width: 340px;
+            width: min(Panes.people, root.width - 360px);
             background: Theme.surface;
             VerticalLayout {
                 HorizontalLayout {
@@ -75,9 +76,12 @@ export component PeopleView inherits Rectangle {
                 }
             }
         }
-        Rectangle {
-            width: 1px;
-            background: Theme.divider;
+        Splitter {
+            size: min(Panes.people, root.width - 360px);
+            minimum: 240px;
+            maximum: min(560px, root.width - 360px);
+            resized(width) => { Panes.people = width; }
+            released => { Panes.changed(); }
         }
         Rectangle {
             horizontal-stretch: 1;

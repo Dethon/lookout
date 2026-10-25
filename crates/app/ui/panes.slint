@@ -1,0 +1,18 @@
+// How the window is divided: the panes' widths and which are hidden.
+// Widths and collapsing are kept in the settings; the rest lasts a session.
+
+export global Panes {
+    // The folder pane, and whether the user put it away.
+    in-out property <length> folders: 256px;
+    in-out property <bool> folders-collapsed;
+    // Shown over the list while the window is too narrow for it to fit.
+    in-out property <bool> folders-flyout;
+    in-out property <length> list: 380px;
+    // The reading pane takes the whole page, folders and list hidden.
+    in-out property <bool> reading-only;
+    in-out property <bool> calendars-collapsed;
+    in-out property <bool> calendars-flyout;
+    in-out property <length> people: 340px;
+    // A width or collapsing changed and should be kept.
+    callback changed();
+}

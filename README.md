@@ -28,6 +28,13 @@ signing in), against the hundreds the new Outlook takes.
   size, importance and address completion; drafts; instant offline search
   (SQLite FTS5) and server search for older mail; unread-only filter; new
   mail notices.
+- **Layout**: the folder pane and the message list are resized by dragging
+  their edges, and kept that way; the folder pane can be put away into a
+  strip of folder icons with unread badges (Ctrl+B), and gives way to it by
+  itself when the window is narrow, opening over the list when wanted. A
+  message can take the whole window. Toolbars drop their labels, then move
+  the least used actions into a menu, as the room shrinks. The calendars'
+  sidebar folds away the same way.
 - **Original view**: messages are shown as sent, laid out and painted by
   [Blitz](https://github.com/DioxusLabs/blitz) inside the reading pane:
   about 15-25 MB more than the simplified view, against some 220 MB for
@@ -70,6 +77,8 @@ signing in), against the hundreds the new Outlook takes.
 | Ctrl+B / Ctrl+I / Ctrl+K | Bold / italic / link, while writing |
 | Ctrl+Enter | Send |
 | Ctrl+1 / 2 / 3 | Mail / calendar / people |
+| Ctrl+B | Show or hide the folder pane (bold in a message's text) |
+| Esc | Leave the whole-window message, close a menu or dialog |
 | F5 | Sync now |
 
 ### Not there yet
@@ -147,7 +156,11 @@ overrides the folder.
 
 `cargo run -p lookout --example snapshot -- out.png` renders the window with
 sample data, without a display; `SNAPSHOT_PAGE=compose|calendar|month|people|welcome|settings`
-and `SNAPSHOT_DARK=1` pick what to show.
+and `SNAPSHOT_DARK=1` pick what to show, a width and height after the file
+name try other window sizes, and `SNAPSHOT_COLLAPSED`, `SNAPSHOT_FLYOUT`,
+`SNAPSHOT_FULL`, `SNAPSHOT_CLICK=x,y` and `SNAPSHOT_DRAG=x,y,x2` show the
+panes put away, the folders over the list, a message across the window, a
+click, and a pane being resized.
 
 ## How it is put together
 

@@ -8,16 +8,27 @@ import { DayColumn, EventBox, AllDayBox, MonthCell, EventDetail, CalendarRow, Ev
 export component CalendarSidebar inherits Rectangle {
     in property <[CalendarRow]> calendars;
     callback new-event();
+    // Puts the sidebar away.
+    callback collapse();
     callback toggle-calendar(string, string, bool);
     background: Theme.background;
     VerticalLayout {
         padding: 8px;
         spacing: 6px;
-        ToolButton {
-            icon: Icons.add;
-            label: "New event";
-            primary: true;
-            clicked => { root.new-event(); }
+        HorizontalLayout {
+            spacing: 4px;
+            ToolButton {
+                horizontal-stretch: 1;
+                icon: Icons.add;
+                label: "New event";
+                primary: true;
+                clicked => { root.new-event(); }
+            }
+            IconButton {
+                icon: Icons.menu-open;
+                tooltip: "Hide calendars";
+                clicked => { root.collapse(); }
+            }
         }
         ListView {
             for calendar in root.calendars: Rectangle {
@@ -75,6 +86,14 @@ export component CalendarView inherits Rectangle {
     callback open-event(string, string);
     callback new-event-at(int, int);
     callback open-day(int);
+    // With the sidebar put away, a button brings it back and its New event
+    // button shows here.
+    in property <bool> sidebar-shown: true;
+    callback show-sidebar();
+    callback new-event();
+    // Short of room: told by the window, as what the toolbar needs would
+    // otherwise decide the view's width.
+    in property <bool> compact;
     background: Theme.surface;
 
     property <length> hour-height: 48px;
@@ -85,9 +104,23 @@ export component CalendarView inherits Rectangle {
             padding: 8px;
             spacing: 4px;
             height: 48px;
+            if !root.sidebar-shown: IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.menu;
+                tooltip: "Show calendars";
+                clicked => { root.show-sidebar(); }
+            }
+            if !root.sidebar-shown: IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.add;
+                tooltip: "New event";
+                tint: Theme.accent;
+                clicked => { root.new-event(); }
+            }
             ToolButton {
                 icon: Icons.calendar;
                 label: "Today";
+                compact: root.compact;
                 clicked => { root.today(); }
             }
             IconButton {
@@ -117,8 +150,9 @@ export component CalendarView inherits Rectangle {
                 height: 16px;
                 indeterminate: true;
             }
-            for label[index] in ["Day", "Work week", "Week", "Month"]: ToolButton {
-                label: label;
+            // Short of room, the work week goes.
+            for index in root.compact ? [0, 2, 3] : [0, 1, 2, 3]: ToolButton {
+                label: ["Day", "Work week", "Week", "Month"][index];
                 tint: index == root.mode ? Theme.accent : Theme.text-muted;
                 clicked => { root.set-mode(index); }
             }

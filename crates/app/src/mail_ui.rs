@@ -431,9 +431,47 @@ fn save_config(app: &App) {
     }
 }
 
+/// What the folder strip shows: the favourites, or else the standard
+/// folders of the account in view.
+fn strip_rows(app: &App, ui: &MainWindow, rows: &[FolderRow]) -> Vec<FolderRow> {
+    let favourites: Vec<FolderRow> = match rows.first() {
+        Some(first) if first.header && first.account.is_empty() => {
+            rows.iter().skip(1).take_while(|row| !row.header).cloned().collect()
+        }
+        _ => Vec::new(),
+    };
+    if !favourites.is_empty() {
+        return favourites;
+    }
+    let account = current_account(app);
+    let several = app.accounts.borrow().len() > 1;
+    let email = app.accounts.borrow().iter().find(|a| a.id == account).map(|a| a.email.clone()).unwrap_or_default();
+    let folders = app.store.folders(&account).unwrap_or_default();
+    ["inbox", "drafts", "sentitems", "archive", "deleteditems", "junkemail"]
+        .iter()
+        .filter_map(|name| {
+            let folder = folders.iter().find(|folder| folder.well_known.as_deref() == Some(*name))?;
+            let unread = match *name {
+                "drafts" => folder.total,
+                "inbox" | "archive" => folder.unread,
+                _ => 0,
+            };
+            Some(FolderRow {
+                account: account.as_str().into(),
+                id: folder.id.as_str().into(),
+                name: if several { format!("{} · {email}", folder.name) } else { folder.name.clone() }.into(),
+                unread: unread as i32,
+                icon: icon_for(ui, Some(name)),
+                ..FolderRow::default()
+            })
+        })
+        .collect()
+}
+
 pub fn folders_changed(app: &Rc<App>) {
     let Some(ui) = app.ui() else { return };
     let rows = folder_rows(app, &ui, None);
+    ui.global::<Mail>().set_strip(ModelRc::new(VecModel::from(strip_rows(app, &ui, &rows))));
     let inbox_unread: i32 = app
         .accounts
         .borrow()
@@ -481,6 +519,10 @@ pub fn open_folder(app: &Rc<App>, account: &str, folder: &str) {
     close_reader(app);
     reload(app);
     update_title(app);
+    // The strip shows the standard folders of the account in view.
+    if app.accounts.borrow().len() > 1 {
+        folders_changed(app);
+    }
     app.engine.send(Request::Watch { account: account.into(), folder: folder.into() });
 }
 

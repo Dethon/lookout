@@ -65,7 +65,7 @@ export component IconButton inherits Rectangle {
             Tip.text = root.tooltip;
         }
     }
-    property <bool> hovered: touch.has-hover;
+    out property <bool> hovered: touch.has-hover;
     changed hovered => {
         if (!self.hovered) {
             root.tip-shown = false;
@@ -85,8 +85,14 @@ export component ToolButton inherits Rectangle {
     in property <bool> primary;
     // A switch that is on.
     in property <bool> active;
+    // Only the icon, the label as a tooltip: for toolbars short of room.
+    in property <bool> compact;
+    // Shown after a moment under the pointer; the label when compact.
+    in property <string> tooltip;
+    property <bool> iconic: root.compact && root.icon != "";
     callback clicked();
     height: 32px;
+    min-width: root.iconic ? 32px : 0px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
     border-radius: Theme.radius;
@@ -94,16 +100,16 @@ export component ToolButton inherits Rectangle {
         : touch.pressed || active ? Theme.selected-strong : touch.has-hover && enabled ? Theme.hover : transparent;
     opacity: enabled ? 1 : 0.4;
     HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 10px;
+        padding-left: root.iconic ? 7px : 8px;
+        padding-right: root.iconic ? 7px : 10px;
         spacing: 6px;
-        alignment: start;
+        alignment: root.iconic ? center : start;
         if root.icon != "": Icon {
             y: (parent.height - self.height) / 2;
             icon: root.icon;
             color: root.primary ? Theme.on-accent : root.tint;
         }
-        Text {
+        if !root.iconic: Text {
             text: root.label;
             color: root.primary ? Theme.on-accent : root.tint;
             font-size: Theme.font-size;
@@ -113,7 +119,73 @@ export component ToolButton inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            Tip.text = "";
+            root.clicked();
+        }
+    }
+    property <string> tip: root.tooltip != "" ? root.tooltip : root.iconic ? root.label : "";
+    // Once per visit of the pointer.
+    property <bool> tip-shown;
+    Timer {
+        interval: 600ms;
+        running: touch.has-hover && root.tip != "" && !root.tip-shown;
+        triggered => {
+            root.tip-shown = true;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.y = root.absolute-position.y + root.height;
+            Tip.text = root.tip;
+        }
+    }
+    property <bool> hovered: touch.has-hover;
+    changed hovered => {
+        if (!self.hovered) {
+            root.tip-shown = false;
+            if (Tip.text == root.tip) {
+                Tip.text = "";
+            }
+        }
+    }
+}
+
+// The line between two panes, dragged to resize the pane before it.
+export component Splitter inherits Rectangle {
+    // The pane's width now, and the bounds it is kept within.
+    in property <length> size;
+    in property <length> minimum;
+    in property <length> maximum;
+    callback resized(length);
+    // The drag ended: the width can be kept.
+    callback released();
+    width: 1px;
+    horizontal-stretch: 0;
+    background: Theme.divider;
+    property <length> start-size;
+    property <length> start-x;
+    // Wider than the line, so it is easy to catch.
+    touch := TouchArea {
+        x: -3px;
+        width: 7px;
+        mouse-cursor: ew-resize;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.start-size = root.size;
+                root.start-x = self.absolute-position.x + self.mouse-x;
+            }
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                root.released();
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.resized(clamp(root.start-size + self.absolute-position.x + self.mouse-x - root.start-x, root.minimum, max(root.minimum, root.maximum)));
+            }
+        }
+    }
+    Rectangle {
+        x: -1px;
+        width: 3px;
+        background: touch.pressed ? Theme.accent : touch.has-hover ? Theme.accent.with-alpha(0.5) : transparent;
     }
 }
 
@@ -163,6 +235,7 @@ export component Field inherits Rectangle {
             font-size: Theme.font-size;
         }
         Rectangle {
+            clip: true;
             input := TextInput {
                 y: 0;
                 width: 100%;
@@ -350,6 +423,67 @@ export component Picker inherits Rectangle {
                                 popup.close();
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// An entry of a MoreButton's menu.
+export struct MenuEntry {
+    id: string,
+    icon: string,
+    label: string,
+}
+
+// A button opening a menu of actions there is no room for.
+export component MoreButton inherits Rectangle {
+    in property <[MenuEntry]> entries;
+    callback activated(string);
+    width: 32px;
+    height: 32px;
+    IconButton {
+        icon: Icons.more;
+        tooltip: "More actions";
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: root.width - self.width;
+        y: root.height + 4px;
+        width: 240px;
+        height: column.preferred-height;
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.divider;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000030;
+            column := VerticalLayout {
+                padding: 4px;
+                for entry in root.entries: Rectangle {
+                    height: 34px;
+                    border-radius: Theme.radius;
+                    background: entry-touch.has-hover ? Theme.hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 12px;
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            icon: entry.icon;
+                        }
+                        Text {
+                            text: entry.label;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    entry-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.activated(entry.id); }
                     }
                 }
             }

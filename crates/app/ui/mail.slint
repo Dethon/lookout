@@ -2,7 +2,8 @@
 
 import { ListView, ScrollView, TextEdit, ComboBox, CheckBox, Spinner } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Icon, IconButton, ToolButton, Avatar, Divider, VDivider, Field, SearchBox } from "widgets.slint";
+import { Panes } from "panes.slint";
+import { Icon, IconButton, ToolButton, Avatar, Divider, VDivider, Field, SearchBox, Tip, MoreButton, MenuEntry } from "widgets.slint";
 import { FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult } from "types.slint";
 
 export component FolderPane inherits Rectangle {
@@ -16,16 +17,27 @@ export component FolderPane inherits Rectangle {
     callback dropped-on(string, string);
     callback toggle-expanded(string, string);
     callback toggle-favourite(string, string);
+    // Puts the pane away.
+    callback collapse();
     background: Theme.background;
 
     VerticalLayout {
         padding: 8px;
         spacing: 6px;
-        ToolButton {
-            icon: Icons.edit;
-            label: "New mail";
-            primary: true;
-            clicked => { root.new-message(); }
+        HorizontalLayout {
+            spacing: 4px;
+            ToolButton {
+                horizontal-stretch: 1;
+                icon: Icons.edit;
+                label: "New mail";
+                primary: true;
+                clicked => { root.new-message(); }
+            }
+            IconButton {
+                icon: Icons.menu-open;
+                tooltip: "Hide folders (Ctrl+B)";
+                clicked => { root.collapse(); }
+            }
         }
         list := ListView {
             // The scroll bar is drawn over the list; rows stop short of it.
@@ -124,6 +136,81 @@ export component FolderPane inherits Rectangle {
             label: "Add account";
             tint: Theme.text-muted;
             clicked => { root.add-account(); }
+        }
+    }
+}
+
+// The folder pane put away: a strip with the favourite or standard folders
+// as icons, their unread counts as badges.
+export component FolderStrip inherits Rectangle {
+    in property <[FolderRow]> folders;
+    in property <string> selected-account;
+    in property <string> selected-folder;
+    callback expand();
+    callback new-message();
+    callback folder-clicked(string, string);
+    callback dropped-on(string, string);
+    width: 48px;
+    background: Theme.background;
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 4px;
+        alignment: start;
+        IconButton {
+            x: (parent.width - self.width) / 2;
+            icon: Icons.menu;
+            tooltip: "Show folders (Ctrl+B)";
+            size: 36px;
+            clicked => { root.expand(); }
+        }
+        IconButton {
+            x: (parent.width - self.width) / 2;
+            icon: Icons.edit;
+            tooltip: "New mail (Ctrl+N)";
+            size: 36px;
+            tint: Theme.on-accent;
+            background: self.hovered ? Theme.accent-hover : Theme.accent;
+            clicked => { root.new-message(); }
+        }
+        Rectangle { height: 6px; }
+        for folder in root.folders: Rectangle {
+            property <bool> selected: folder.account == root.selected-account && folder.id == root.selected-folder;
+            x: (parent.width - self.width) / 2;
+            width: 36px;
+            height: 36px;
+            border-radius: Theme.radius;
+            background: drop.has-drag ? Theme.selected-strong : selected ? Theme.selected : transparent;
+            IconButton {
+                icon: folder.icon;
+                tooltip: folder.unread > 0 ? folder.name + " (" + folder.unread + ")" : folder.name;
+                size: 36px;
+                tint: selected ? Theme.accent : Theme.text-muted;
+                clicked => { root.folder-clicked(folder.account, folder.id); }
+            }
+            if folder.unread > 0: Rectangle {
+                x: parent.width - self.width + 3px;
+                y: 1px;
+                height: 15px;
+                width: max(15px, badge.preferred-width + 8px);
+                border-radius: 7.5px;
+                background: Theme.accent;
+                border-width: 1.5px;
+                border-color: Theme.background;
+                badge := Text {
+                    text: folder.unread > 99 ? "99+" : folder.unread;
+                    color: Theme.on-accent;
+                    font-size: 9px;
+                    font-weight: 700;
+                }
+            }
+            drop := DropArea {
+                can-drop(event) => { return DragAction.move; }
+                dropped(event) => {
+                    root.dropped-on(folder.account, folder.id);
+                    return DragAction.move;
+                }
+            }
         }
     }
 }
@@ -607,7 +694,17 @@ export component ReadingPane inherits Rectangle {
         }
     }
 
+    // As the pane narrows, the toolbar's labels go, then the least used
+    // actions move to a menu: 3 everything, 2 labels for answering only,
+    // 1 icons only, 0 a menu besides.
+    property <length> draft-room: root.reader.draft ? 100px : 0px;
+    property <int> tier: root.width >= 700px + draft-room ? 3 : root.width >= 560px + draft-room ? 2 : root.width >= 420px ? 1 : 0;
+    property <bool> compact: root.tier < 3;
+
+    // Placed, so the toolbar that fits the width doesn't decide it.
     if root.reader.open && root.selection-count <= 1: VerticalLayout {
+        width: parent.width;
+        height: parent.height;
         // Toolbar.
         HorizontalLayout {
             padding: 6px;
@@ -617,29 +714,38 @@ export component ReadingPane inherits Rectangle {
                 icon: Icons.edit;
                 label: "Edit draft";
                 tint: Theme.accent;
+                compact: root.compact;
                 clicked => { root.edit-draft(); }
             }
             ToolButton {
                 icon: Icons.reply;
                 label: "Reply";
+                tooltip: root.tier < 2 ? "Reply (Ctrl+R)" : "";
+                compact: root.tier < 2;
                 clicked => { root.reply(); }
             }
             ToolButton {
                 icon: Icons.reply-all;
                 label: "Reply all";
+                tooltip: root.tier < 2 ? "Reply all (Ctrl+Shift+R)" : "";
+                compact: root.tier < 2;
                 clicked => { root.reply-all(); }
             }
             ToolButton {
                 icon: Icons.forward;
                 label: "Forward";
+                tooltip: root.tier < 2 ? "Forward (Ctrl+F)" : "";
+                compact: root.tier < 2;
                 clicked => { root.forward(); }
             }
             // The message as sent, or simplified to suit the theme.
             ToolButton {
                 icon: Icons.open-external;
                 label: "Original";
+                tooltip: root.original ? "Showing the message as sent; click for the simplified view" : "Show the message as sent";
                 tint: root.original ? Theme.accent : Theme.text;
                 active: root.original;
+                compact: root.compact;
                 clicked => { root.toggle-original(); }
             }
             Rectangle { horizontal-stretch: 1; }
@@ -648,7 +754,7 @@ export component ReadingPane inherits Rectangle {
                 tooltip: "Archive";
                 clicked => { root.archive(); }
             }
-            IconButton {
+            if root.tier > 0: IconButton {
                 icon: Icons.move;
                 tooltip: "Move to folder";
                 clicked => { root.move(); }
@@ -664,18 +770,37 @@ export component ReadingPane inherits Rectangle {
                 tint: root.reader.flagged ? Theme.flag : Theme.text-muted;
                 clicked => { root.toggle-flag(); }
             }
-            IconButton {
+            if root.tier > 0: IconButton {
                 icon: root.reader.unread ? Icons.mail-open : Icons.mail;
                 tooltip: root.reader.unread ? "Mark as read (Ctrl+Q)" : "Mark as unread (Ctrl+U)";
                 clicked => { root.toggle-read(); }
             }
-            IconButton {
+            if root.tier > 0: IconButton {
                 icon: Icons.select-text;
                 tooltip: "Select text to copy";
                 active: root.select-text;
                 clicked => { root.toggle-select-text(); }
             }
-
+            if root.tier > 0: IconButton {
+                icon: Panes.reading-only ? Icons.exit-full-view : Icons.full-view;
+                tooltip: Panes.reading-only ? "Show folders and messages (Esc)" : "Read in full window";
+                active: Panes.reading-only;
+                clicked => { Panes.reading-only = !Panes.reading-only; }
+            }
+            if root.tier == 0: MoreButton {
+                entries: [
+                    { id: "move", icon: Icons.move, label: "Move to folder" },
+                    { id: "read", icon: root.reader.unread ? Icons.mail-open : Icons.mail, label: root.reader.unread ? "Mark as read" : "Mark as unread" },
+                    { id: "select", icon: Icons.select-text, label: root.select-text ? "Stop selecting text" : "Select text to copy" },
+                    { id: "full", icon: Icons.full-view, label: Panes.reading-only ? "Show folders and messages" : "Read in full window" },
+                ];
+                activated(id) => {
+                    if (id == "move") { root.move(); }
+                    if (id == "read") { root.toggle-read(); }
+                    if (id == "select") { root.toggle-select-text(); }
+                    if (id == "full") { Panes.reading-only = !Panes.reading-only; }
+                }
+            }
         }
         Divider { }
         // Header.
@@ -990,6 +1115,10 @@ export component ComposePane inherits Rectangle {
         }
     }
 
+    // Labels go when the pane is too narrow for them; told by the window,
+    // as what the toolbar needs would otherwise decide the pane's width.
+    in property <bool> compact;
+
     VerticalLayout {
         HorizontalLayout {
             padding: 6px;
@@ -998,6 +1127,7 @@ export component ComposePane inherits Rectangle {
             ToolButton {
                 icon: Icons.send;
                 label: root.compose.sending ? "Sending…" : "Send";
+                tooltip: "Send (Ctrl+Enter)";
                 primary: true;
                 enabled: !root.compose.sending;
                 clicked => {
@@ -1007,12 +1137,16 @@ export component ComposePane inherits Rectangle {
             ToolButton {
                 icon: Icons.attach;
                 label: "Attach";
+                compact: root.compact;
                 clicked => { root.attach(); }
             }
             ToolButton {
                 icon: Icons.important;
                 label: "Important";
+                tooltip: root.compose.important ? "Sent with high importance" : "Send with high importance";
                 tint: root.compose.important ? Theme.danger : Theme.text;
+                active: root.compose.important;
+                compact: root.compact;
                 clicked => { root.compose.important = !root.compose.important; }
             }
             Rectangle { horizontal-stretch: 1; }
@@ -1024,7 +1158,15 @@ export component ComposePane inherits Rectangle {
             ToolButton {
                 icon: Icons.delete;
                 label: "Discard";
+                compact: root.compact;
                 clicked => { root.discard(); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Panes.reading-only ? Icons.exit-full-view : Icons.full-view;
+                tooltip: Panes.reading-only ? "Show folders and messages (Esc)" : "Write in full window";
+                active: Panes.reading-only;
+                clicked => { Panes.reading-only = !Panes.reading-only; }
             }
         }
         Divider { }
@@ -1184,6 +1326,7 @@ export component ComposePane inherits Rectangle {
             ToolButton {
                 icon: Icons.preview;
                 label: "Preview";
+                compact: root.compact;
                 active: root.compose.preview;
                 tint: root.compose.preview ? Theme.accent : Theme.text;
                 clicked => {

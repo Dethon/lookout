@@ -9,7 +9,7 @@ use lookout_core::{Account, Config, Store};
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::engine::{Engine, Event, Request};
-use crate::{AccountRow, MainWindow, Page, Shell as AppGlobal, Theme};
+use crate::{AccountRow, MainWindow, Page, Panes, Shell as AppGlobal, Theme};
 use crate::{autostart, calendar_ui, mail_ui, notify, people_ui, tray, update_ui};
 
 // How long a notice stays up.
@@ -149,6 +149,12 @@ impl App {
         global.set_close_to_tray(config.close_to_tray);
         global.set_notify_new_mail(config.notify_new_mail);
         global.set_start_with_windows(autostart::enabled());
+        let panes = ui.global::<Panes>();
+        panes.set_folders(config.panes.folders);
+        panes.set_folders_collapsed(config.panes.folders_collapsed);
+        panes.set_list(config.panes.list);
+        panes.set_calendars_collapsed(config.panes.calendars_collapsed);
+        panes.set_people(config.panes.people);
         drop(config);
         crate::set_color_scheme(ui, self.config.borrow().dark);
 
@@ -193,6 +199,22 @@ impl App {
                 }
                 app.persist();
                 mail_ui::theme_changed(&app);
+            }
+        });
+        let app = Rc::downgrade(self);
+        panes.on_changed(move || {
+            if let Some(app) = app.upgrade()
+                && let Some(ui) = app.ui()
+            {
+                let panes = ui.global::<Panes>();
+                app.config.borrow_mut().panes = lookout_core::config::Panes {
+                    folders: panes.get_folders(),
+                    folders_collapsed: panes.get_folders_collapsed(),
+                    list: panes.get_list(),
+                    calendars_collapsed: panes.get_calendars_collapsed(),
+                    people: panes.get_people(),
+                };
+                app.persist();
             }
         });
         let app = Rc::downgrade(self);

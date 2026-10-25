@@ -3,10 +3,15 @@
 import { ListView, TextEdit, ComboBox, CheckBox, LineEdit, Spinner } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
 import { Icon, IconButton, ToolButton, Divider, VDivider, Field, Overlay, Picker } from "widgets.slint";
-import { DayColumn, EventBox, AllDayBox, MonthCell, EventDetail, CalendarRow, EventEditor } from "types.slint";
+import { DayColumn, EventBox, AllDayBox, MonthCell, EventDetail, CalendarRow, EventEditor, MiniDay } from "types.slint";
 
 export component CalendarSidebar inherits Rectangle {
     in property <[CalendarRow]> calendars;
+    in property <string> mini-title;
+    in property <[MiniDay]> mini-days;
+    // Another month in the sidebar, and a day picked from it.
+    callback mini-step(int);
+    callback mini-pick(int);
     callback new-event();
     // Puts the sidebar away.
     callback collapse();
@@ -30,6 +35,87 @@ export component CalendarSidebar inherits Rectangle {
                 clicked => { root.collapse(); }
             }
         }
+        // A month to go to any day from.
+        VerticalLayout {
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 2px;
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 0px;
+                Text {
+                    text: root.mini-title;
+                    color: Theme.text;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: Icons.left;
+                    tooltip: "Previous month";
+                    size: 26px;
+                    icon-size: 16px;
+                    clicked => { root.mini-step(-1); }
+                }
+                IconButton {
+                    icon: Icons.right;
+                    tooltip: "Next month";
+                    size: 26px;
+                    icon-size: 16px;
+                    clicked => { root.mini-step(1); }
+                }
+            }
+            mini := Rectangle {
+                property <length> cell: self.width / 7;
+                height: self.cell * 0.8 + 6 * self.cell;
+                for letter[column] in ["M", "T", "W", "T", "F", "S", "S"]: Text {
+                    x: column * mini.cell;
+                    y: 0;
+                    width: mini.cell;
+                    height: mini.cell * 0.8;
+                    text: letter;
+                    color: Theme.text-faint;
+                    font-size: Theme.small - 1px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                for day[index] in root.mini-days: Rectangle {
+                    x: mod(index, 7) * mini.cell;
+                    y: mini.cell * 0.8 + floor(index / 7) * mini.cell;
+                    width: mini.cell;
+                    height: mini.cell;
+                    // The days the view shows, as one band.
+                    if day.shown: Rectangle {
+                        property <bool> starts: mod(index, 7) == 0 || !root.mini-days[index - 1].shown;
+                        property <bool> ends: mod(index, 7) == 6 || !root.mini-days[index + 1].shown;
+                        y: 2px;
+                        height: parent.height - 4px;
+                        background: Theme.selected;
+                        border-top-left-radius: self.starts ? self.height / 2 : 0;
+                        border-bottom-left-radius: self.starts ? self.height / 2 : 0;
+                        border-top-right-radius: self.ends ? self.height / 2 : 0;
+                        border-bottom-right-radius: self.ends ? self.height / 2 : 0;
+                    }
+                    Rectangle {
+                        width: min(parent.width, parent.height) - 4px;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: day.today ? Theme.accent : day-touch.has-hover ? Theme.hover : transparent;
+                        Text {
+                            text: day.day;
+                            color: day.today ? Theme.on-accent : day.in-month ? Theme.text : Theme.text-faint;
+                            font-size: Theme.small;
+                            font-weight: day.today ? 700 : 400;
+                        }
+                    }
+                    day-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.mini-pick(index); }
+                    }
+                }
+            }
+        }
+        Divider { }
         ListView {
             for calendar in root.calendars: Rectangle {
                 height: calendar.header ? 34px : 32px;
@@ -288,7 +374,8 @@ export component CalendarView inherits Rectangle {
                             font-size: Theme.small;
                             font-weight: 600;
                             overflow: elide;
-                            wrap: word-wrap;
+                            // Too narrow, words would break between letters.
+                            wrap: (column-width - 6px) / event.columns > 56px ? word-wrap : no-wrap;
                             max-height: parent.height - 4px;
                         }
                         if event.height * 24 * root.hour-height > 36px: Text {

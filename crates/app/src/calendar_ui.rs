@@ -13,7 +13,7 @@ use slint::{Color, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, Vec
 
 use crate::app::App;
 use crate::engine::Request;
-use crate::{AllDayBox, Cal, CalendarRow, DayColumn, EventBox, EventDetail, EventEditor, MainWindow, MonthCell, MonthEvent, format};
+use crate::{AllDayBox, Cal, CalendarRow, DayColumn, EventBox, EventDetail, EventEditor, MainWindow, MiniDay, MonthCell, MonthEvent, format};
 
 const PALETTE: &[u32] = &[0x0f6cbd, 0xc239b3, 0x13a10e, 0xca5010, 0x8764b8, 0x038387, 0x986f0b, 0xd13438];
 const MONTH_LINES: usize = 3;
@@ -24,6 +24,11 @@ const DEFAULT_REMINDER: i32 = 2;
 pub struct CalState {
     mode: Cell<i32>,
     anchor: Cell<NaiveDate>,
+    /// The first of the month the sidebar shows.
+    mini_month: Cell<NaiveDate>,
+    /// The anchor and mode last shown, so the sidebar's month only follows
+    /// the view when the view moved.
+    last_view: Cell<(NaiveDate, i32)>,
     days: RefCell<Vec<NaiveDate>>,
     colors: RefCell<HashMap<(String, String), Color>>,
     names: RefCell<HashMap<(String, String), String>>,
@@ -42,6 +47,8 @@ impl CalState {
         Self {
             mode: Cell::new(2),
             anchor: Cell::new(Local::now().date_naive()),
+            mini_month: Cell::new(Local::now().date_naive().with_day(1).expect("the first exists")),
+            last_view: Cell::new((NaiveDate::MIN, -1)),
             days: RefCell::new(Vec::new()),
             colors: RefCell::new(HashMap::new()),
             names: RefCell::new(HashMap::new()),
@@ -71,6 +78,21 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
         refresh(&app);
     }));
     cal.on_previous(with_app!(app, |app| step(&app, -1)));
+    cal.on_mini_step(with_app!(app, |app, direction| {
+        let month = app.cal.mini_month.get();
+        let moved = if direction > 0 {
+            month.checked_add_months(chrono::Months::new(1))
+        } else {
+            month.checked_sub_months(chrono::Months::new(1))
+        };
+        app.cal.mini_month.set(moved.unwrap_or(month));
+        show_mini(&app);
+    }));
+    cal.on_mini_pick(with_app!(app, |app, index| {
+        let day = shift_days(monday_of(app.cal.mini_month.get()), i64::from(index.max(0)));
+        app.cal.anchor.set(day);
+        refresh(&app);
+    }));
     cal.on_next(with_app!(app, |app| step(&app, 1)));
     cal.on_set_mode(with_app!(app, |app, mode| {
         app.cal.mode.set(mode);
@@ -294,9 +316,44 @@ pub fn refresh(app: &Rc<App>) {
         cal.set_all_day(ModelRc::new(VecModel::from(all_day)));
         cal.set_all_day_rows(rows);
     }
+    // The sidebar's month follows the view when it moves away from it,
+    // but not when the view is only redrawn.
+    if app.cal.last_view.replace((anchor, mode)) != (anchor, mode) {
+        let mini = app.cal.mini_month.get();
+        if !days.iter().any(|day| day.year() == mini.year() && day.month() == mini.month()) || mode == 3 {
+            app.cal.mini_month.set(anchor.with_day(1).expect("the first exists"));
+        }
+    }
     *app.cal.days.borrow_mut() = days;
+    show_mini(app);
     update_now(app);
     app.engine.send(Request::CalendarRange { start, end });
+}
+
+/// The sidebar's month: six weeks from the Monday before its first, the
+/// days the view shows marked.
+fn show_mini(app: &App) {
+    let Some(ui) = app.ui() else { return };
+    let month = app.cal.mini_month.get();
+    let today = Local::now().date_naive();
+    let days = app.cal.days.borrow();
+    let mode = app.cal.mode.get();
+    let first = monday_of(month);
+    let cells: Vec<MiniDay> = (0..42)
+        .map(|offset| {
+            let day = shift_days(first, offset);
+            MiniDay {
+                day: day.day().to_string().into(),
+                in_month: day.month() == month.month(),
+                today: day == today,
+                // A month view shows its own month, not six weeks.
+                shown: if mode == 3 { day.month() == app.cal.anchor.get().month() && day.year() == app.cal.anchor.get().year() } else { days.contains(&day) },
+            }
+        })
+        .collect();
+    let cal = ui.global::<Cal>();
+    cal.set_mini_title(month.format("%B %Y").to_string().into());
+    cal.set_mini_days(ModelRc::new(VecModel::from(cells)));
 }
 
 fn update_now(app: &App) {

@@ -209,6 +209,15 @@ export struct EventDetail {
     loading: bool,
 }
 
+// A day of the sidebar's month, to go to.
+export struct MiniDay {
+    day: string,
+    in-month: bool,
+    today: bool,
+    // Shown in the view beside.
+    shown: bool,
+}
+
 export struct CalendarRow {
     account: string,
     id: string,

@@ -248,6 +248,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|(i, d)| DayColumn { weekday: (*d).into(), day: (19 + i).to_string().into(), today: i == 4 })
             .collect();
         cal.set_days(ModelRc::new(VecModel::from(days)));
+        // October 2026 from Monday 28 September, the week of the 19th shown.
+        let mini: Vec<MiniDay> = (0..42)
+            .map(|i| {
+                let (day, in_month) = if i < 3 { (28 + i, false) } else if i < 34 { (i - 2, true) } else { (i - 33, false) };
+                MiniDay {
+                    day: day.to_string().into(),
+                    in_month,
+                    today: in_month && day == 23,
+                    shown: page != "month" && in_month && (19..=25).contains(&day) || page == "month" && in_month,
+                }
+            })
+            .collect();
+        cal.set_mini_title("October 2026".into());
+        cal.set_mini_days(ModelRc::new(VecModel::from(mini)));
         let event = |day: i32, start: f32, hours: f32, title: &str, column: i32, columns: i32| EventBox {
             account: "a".into(),
             id: title.into(),

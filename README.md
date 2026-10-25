@@ -52,9 +52,10 @@ signing in), against the hundreds the new Outlook takes.
   `"webview": true` in `config.json` shows the original in WebView2
   instead, on Windows.
 - **Calendar**: day, work week, week and month views across calendars and
-  accounts, with overlap layout and all-day strip; create, edit, delete and
-  cancel events; attendees, location, Teams meetings, show-as, reminders;
-  accept, tentative, decline; join online meetings.
+  accounts, with overlap layout and all-day strip, and a month in the
+  sidebar to go to any day; create, edit, delete and cancel events;
+  attendees, location, Teams meetings, show-as, reminders; accept,
+  tentative, decline; join online meetings.
 - **People**: contacts across accounts, search, create, edit, delete, mail
   a contact; each card lists the latest messages with that person, a click
   away.

@@ -4,7 +4,7 @@ import { Panes } from "panes.slint";
 import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter } from "widgets.slint";
 import {
     Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult, Suggestion,
-    DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
+    DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor, MiniDay,
     ContactRow, ContactView, ContactEditor, ContactField, RecentMessage,
 } from "types.slint";
 import { FolderPane, FolderStrip, MessageList, ReadingPane, ComposePane } from "mail.slint";
@@ -12,7 +12,7 @@ import { CalendarSidebar, CalendarView, EventDetailDialog, EventEditorDialog } f
 import { PeopleView, ContactEditorDialog } from "people.slint";
 
 export { Palette, Theme, Icons, Panes, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, Suggestion,
-    DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
+    DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor, MiniDay,
     ContactRow, ContactView, ContactEditor, ContactField, RecentMessage }
 
 export global Shell {
@@ -169,6 +169,11 @@ export global Cal {
     in property <int> now-day: -1;
     in property <bool> busy;
     in property <[CalendarRow]> calendars;
+    // The sidebar's month: its name and six weeks from Monday.
+    in property <string> mini-title;
+    in property <[MiniDay]> mini-days;
+    callback mini-step(int);
+    callback mini-pick(int);
     in property <[string]> calendar-labels;
     // Per label, whether events can be added to that calendar.
     in property <[bool]> calendar-writable;
@@ -958,6 +963,10 @@ export component MainWindow inherits Window {
                             if root.calendars-inline: CalendarSidebar {
                                 width: 230px;
                                 calendars: Cal.calendars;
+                                mini-title: Cal.mini-title;
+                                mini-days: Cal.mini-days;
+                                mini-step(direction) => { Cal.mini-step(direction); }
+                                mini-pick(index) => { Cal.mini-pick(index); }
                                 new-event => { Cal.new-event(); }
                                 toggle-calendar(account, id, shown) => { Cal.toggle-calendar(account, id, shown); }
                                 collapse => {
@@ -1010,6 +1019,13 @@ export component MainWindow inherits Window {
                                 drop-shadow-blur: 16px;
                                 drop-shadow-color: #00000040;
                                 calendars: Cal.calendars;
+                                mini-title: Cal.mini-title;
+                                mini-days: Cal.mini-days;
+                                mini-step(direction) => { Cal.mini-step(direction); }
+                                mini-pick(index) => {
+                                    Panes.calendars-flyout = false;
+                                    Cal.mini-pick(index);
+                                }
                                 new-event => {
                                     Panes.calendars-flyout = false;
                                     Cal.new-event();

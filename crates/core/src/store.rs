@@ -15,7 +15,7 @@ use crate::model::{
     MessageSummary, Phone, Response,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 // SQLite's page cache per connection, in KiB (negative means KiB).
 const CACHE_KIB: i64 = -2048;
 // Bodies kept for messages opened earlier; the least recently opened go first.
@@ -140,6 +140,22 @@ CREATE TABLE contacts (
 );
 "#;
 
+// What each version adds to the one before. Caches made earlier run those
+// they lack; new ones run `SCHEMA` (version 1), then all of them. Index 0
+// takes version 1 to 2.
+const MIGRATIONS: &[&str] = &[PHOTOS];
+
+const PHOTOS: &str = r#"
+CREATE TABLE IF NOT EXISTS photos (
+    account TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    -- NULL when the contact has no picture.
+    data BLOB,
+    checked INTEGER NOT NULL,
+    PRIMARY KEY (account, contact_id)
+);
+"#;
+
 pub struct Store {
     db: Connection,
 }
@@ -210,6 +226,15 @@ impl Store {
         let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 0 {
             db.execute_batch(SCHEMA)?;
+            for migration in MIGRATIONS {
+                db.execute_batch(migration)?;
+            }
+        } else {
+            for migration in MIGRATIONS.iter().skip((version - 1).max(0) as usize) {
+                db.execute_batch(migration)?;
+            }
+        }
+        if version != SCHEMA_VERSION {
             db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(Self { db })
@@ -243,7 +268,7 @@ impl Store {
     /// Forgets an account and everything cached for it.
     pub fn remove_account(&mut self, account: &str) -> Result<()> {
         let tx = self.db.transaction()?;
-        for table in ["accounts", "folders", "messages", "sync_state", "calendars", "events", "contacts"] {
+        for table in ["accounts", "folders", "messages", "sync_state", "calendars", "events", "contacts", "photos"] {
             let column = if table == "accounts" { "id" } else { "account" };
             tx.execute(&format!("DELETE FROM {table} WHERE {column} = ?1"), [account])?;
         }
@@ -811,6 +836,70 @@ impl Store {
         Ok(statement.query_row([account, id], contact_from).optional()?)
     }
 
+    // Contacts' pictures
+
+    /// Contacts whose picture wasn't looked for since `before`, never
+    /// looked for first.
+    pub fn contacts_without_photos(&self, account: &str, before: i64, limit: usize) -> Result<Vec<String>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT c.id FROM contacts c
+             LEFT JOIN photos p ON p.account = c.account AND p.contact_id = c.id
+             WHERE c.account = ?1 AND (p.checked IS NULL OR p.checked < ?2)
+             ORDER BY p.checked IS NOT NULL, p.checked LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![account, before, limit as i64], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Keeps a contact's picture, or that it has none.
+    pub fn put_photo(&self, account: &str, contact: &str, data: Option<&[u8]>, checked: i64) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO photos (account, contact_id, data, checked) VALUES (?1, ?2, ?3, ?4)",
+            params![account, contact, data, checked],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the pictures of contacts that are gone.
+    pub fn drop_orphan_photos(&self) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM photos WHERE NOT EXISTS
+             (SELECT 1 FROM contacts c WHERE c.account = photos.account AND c.id = photos.contact_id)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn contact_photo(&self, account: &str, contact: &str) -> Result<Option<Vec<u8>>> {
+        let mut statement = self
+            .db
+            .prepare_cached("SELECT data FROM photos WHERE account = ?1 AND contact_id = ?2 AND data IS NOT NULL")?;
+        Ok(statement.query_row([account, contact], |row| row.get(0)).optional()?)
+    }
+
+    /// Every contact's addresses, lowercased, with the contact's account and
+    /// id.
+    pub fn contact_addresses(&self) -> Result<Vec<(String, String, String)>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT lower(json_extract(e.value, '$.address')), c.account, c.id
+             FROM contacts c, json_each(c.emails_json) e",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The contact with this address, in any account: account and id.
+    pub fn contact_with_address(&self, address: &str) -> Result<Option<(String, String)>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT c.account, c.id FROM contacts c
+             WHERE EXISTS (
+                 SELECT 1 FROM json_each(c.emails_json) e
+                 WHERE lower(json_extract(e.value, '$.address')) = lower(?1))
+             LIMIT 1",
+        )?;
+        Ok(statement.query_row([address.trim()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+    }
+
     /// Addresses for completing a recipient: contacts first, then people
     /// mail came from, most frequent first.
     pub fn suggest_addresses(&self, prefix: &str, limit: usize) -> Result<Vec<Address>> {
@@ -938,6 +1027,10 @@ mod tests {
         }
     }
 
+    fn folder(id: &str) -> Folder {
+        Folder { id: id.into(), parent_id: None, name: id.into(), well_known: None, unread: 0, total: 0 }
+    }
+
     #[test]
     fn folders_list_newest_first() {
         let mut store = Store::open_in_memory().unwrap();
@@ -979,14 +1072,6 @@ mod tests {
     #[test]
     fn gone_folders_take_their_messages() {
         let mut store = Store::open_in_memory().unwrap();
-        let folder = |id: &str| Folder {
-            id: id.into(),
-            parent_id: None,
-            name: id.into(),
-            well_known: None,
-            unread: 0,
-            total: 0,
-        };
         store.put_folders("a", &[folder("inbox"), folder("old")]).unwrap();
         store.put_messages(&[record("1", "inbox", "x", 1), record("2", "old", "y", 2)]).unwrap();
         store.set_sync_link("a", "messages:old", Some("link")).unwrap();
@@ -994,6 +1079,40 @@ mod tests {
         assert!(store.row_of("a", "2").unwrap().is_none());
         assert!(store.row_of("a", "1").unwrap().is_some());
         assert!(store.sync_link("a", "messages:old").unwrap().is_none());
+    }
+
+    #[test]
+    fn older_caches_gain_the_new_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.sqlite3");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(SCHEMA).unwrap();
+            db.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        let contact = Contact {
+            account: "a".into(),
+            id: "c".into(),
+            display_name: "Ana".into(),
+            emails: vec![Address { name: "Ana".into(), address: "Ana@Example.com".into() }],
+            ..Contact::default()
+        };
+        store.put_contacts(&[contact]).unwrap();
+        assert_eq!(store.contacts_without_photos("a", 10, 5).unwrap(), ["c"]);
+        store.put_photo("a", "c", Some(&[1, 2, 3]), 20).unwrap();
+        assert!(store.contacts_without_photos("a", 10, 5).unwrap().is_empty());
+        assert_eq!(store.contact_photo("a", "c").unwrap(), Some(vec![1, 2, 3]));
+        assert_eq!(store.contact_with_address("ANA@example.com").unwrap(), Some(("a".into(), "c".into())));
+        assert_eq!(store.contact_with_address("bo@example.com").unwrap(), None);
+        assert_eq!(store.contact_addresses().unwrap(), [("ana@example.com".into(), "a".into(), "c".into())]);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        store.clear_contacts("a").unwrap();
+        store.drop_orphan_photos().unwrap();
+        assert_eq!(store.contact_photo("a", "c").unwrap(), None);
     }
 
     #[test]

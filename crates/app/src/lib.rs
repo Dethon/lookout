@@ -14,6 +14,7 @@ mod models;
 mod notify;
 mod page;
 mod people_ui;
+pub mod photos;
 #[cfg(windows)]
 mod registry;
 mod repaint;

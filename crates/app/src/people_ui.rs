@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use lookout_core::model::{Contact, Phone};
+use lookout_core::model::{Address, Contact, Phone};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::app::App;
@@ -56,6 +56,37 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     }));
 }
 
+/// Opens the editor for a new contact with this address, as for the sender
+/// of a message.
+pub fn new_contact_for(app: &Rc<App>, account: &str, person: &Address) {
+    let Some(ui) = app.ui() else { return };
+    // An address alone has no name worth keeping.
+    let name = if person.name == person.address { "" } else { person.name.trim() };
+    let (given, surname) = match name.rsplit_once(' ') {
+        Some((given, surname)) if !name.contains(',') => (given.trim(), surname.trim()),
+        _ => (name, ""),
+    };
+    ui.global::<People>().set_editor(ContactEditor {
+        open: true,
+        account_index: app.account_index(account),
+        given_name: given.into(),
+        surname: surname.into(),
+        display_name: name.into(),
+        emails: person.address.as_str().into(),
+        ..ContactEditor::default()
+    });
+}
+
+/// Shows a contact's card on the People page.
+pub fn show_contact(app: &Rc<App>, account: &str, id: &str) {
+    let Some(ui) = app.ui() else { return };
+    let people = ui.global::<People>();
+    people.set_filter("".into());
+    *app.people.selected.borrow_mut() = Some((account.to_owned(), id.to_owned()));
+    ui.global::<crate::Shell>().set_page(crate::Page::People);
+    refresh(app);
+}
+
 pub fn refresh(app: &Rc<App>) {
     let Some(ui) = app.ui() else { return };
     let people = ui.global::<People>();
@@ -68,6 +99,8 @@ pub fn refresh(app: &Rc<App>) {
             name: name_of(contact).into(),
             email: contact.emails.first().map(|e| e.address.as_str()).unwrap_or_default().into(),
             initials: format::initials(&name_of(contact)).into(),
+            hue: hue_of(contact),
+            picture: app.photos.for_contact(&app.store, &contact.account, &contact.id),
             detail: contact
                 .emails
                 .first()
@@ -98,6 +131,11 @@ fn name_of(contact: &Contact) -> String {
     } else {
         "(no name)".into()
     }
+}
+
+/// The colour of a contact's initials: their address's, as in mail.
+fn hue_of(contact: &Contact) -> i32 {
+    format::hue(contact.emails.first().map(|email| email.address.as_str()).unwrap_or(&contact.display_name))
 }
 
 fn select(app: &Rc<App>, index: i32) {
@@ -131,6 +169,8 @@ fn select(app: &Rc<App>, index: i32) {
         id: contact.id.as_str().into(),
         name: name_of(contact).into(),
         initials: format::initials(&name_of(contact)).into(),
+        hue: hue_of(contact),
+        picture: app.photos.for_contact(&app.store, &contact.account, &contact.id),
         lines: ModelRc::new(VecModel::from(lines)),
         emails: ModelRc::new(VecModel::from(emails)),
         notes: contact.notes.as_str().into(),

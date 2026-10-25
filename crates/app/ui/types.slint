@@ -43,6 +43,10 @@ export struct MessageRow {
     attachment: bool,
     important: bool,
     draft: bool,
+    // Who the row shows, for their avatar.
+    initials: string,
+    hue: int,
+    picture: image,
 }
 
 // One picture of a picture row; sizes are the sender's, scaled to fit.
@@ -84,6 +88,10 @@ export struct Reader {
     sender: string,
     sender-address: string,
     initials: string,
+    hue: int,
+    picture: image,
+    // The sender is one of the user's contacts.
+    contact: bool,
     to: string,
     cc: string,
     date: string,
@@ -226,6 +234,8 @@ export struct ContactRow {
     name: string,
     email: string,
     initials: string,
+    hue: int,
+    picture: image,
     detail: string,
 }
 
@@ -252,6 +262,8 @@ export struct ContactView {
     id: string,
     name: string,
     initials: string,
+    hue: int,
+    picture: image,
     lines: [string],
     emails: [string],
     notes: string,

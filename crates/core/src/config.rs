@@ -39,6 +39,8 @@ pub struct Config {
     /// New mail in the Inbox is shown in Windows notifications while the
     /// window is in the background.
     pub notify_new_mail: bool,
+    /// The message list shows each sender's picture or initials.
+    pub list_avatars: bool,
     pub panes: Panes,
 }
 
@@ -75,6 +77,7 @@ impl Default for Config {
             check_for_updates: true,
             close_to_tray: true,
             notify_new_mail: true,
+            list_avatars: true,
             panes: Panes::default(),
         }
     }

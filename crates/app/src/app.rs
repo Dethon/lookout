@@ -39,6 +39,7 @@ pub struct App {
     pub cal: calendar_ui::CalState,
     pub people: people_ui::PeopleState,
     pub update: update_ui::UpdateState,
+    pub photos: Rc<crate::photos::Photos>,
     next_token: Cell<u64>,
     toast_timer: Timer,
     /// The notification area icon, while closing the window keeps Lookout
@@ -60,13 +61,15 @@ impl App {
                 });
             });
         });
+        let photos = Rc::new(crate::photos::Photos::default());
         let app = Rc::new(Self {
             ui: ui.as_weak(),
             engine,
-            mail: mail_ui::MailState::new(store.clone()),
+            mail: mail_ui::MailState::new(store.clone(), photos.clone()),
             cal: calendar_ui::CalState::new(),
             people: people_ui::PeopleState::default(),
             update: update_ui::UpdateState::default(),
+            photos,
             store,
             config: RefCell::new(config),
             accounts: RefCell::new(Vec::new()),
@@ -143,6 +146,7 @@ impl App {
         // Only an id the user set; empty means Lookout's own.
         global.set_client_id(config.client_id.clone().unwrap_or_default().into());
         global.set_load_images(config.load_remote_images);
+        global.set_list_avatars(config.list_avatars);
         global.set_version(env!("CARGO_PKG_VERSION").into());
         global.set_status("Starting…".into());
         global.set_desktop(notify::AVAILABLE);
@@ -214,6 +218,16 @@ impl App {
                     calendars_collapsed: panes.get_calendars_collapsed(),
                     people: panes.get_people(),
                 };
+                app.persist();
+            }
+        });
+        let app = Rc::downgrade(self);
+        global.on_list_avatars_changed(move |on| {
+            if let Some(app) = app.upgrade() {
+                app.config.borrow_mut().list_avatars = on;
+                if let Some(ui) = app.ui() {
+                    ui.global::<AppGlobal>().set_list_avatars(on);
+                }
                 app.persist();
             }
         });
@@ -422,7 +436,16 @@ impl App {
             Event::CalendarBody { account, id, html } => calendar_ui::event_body(self, &account, &id, &html),
             Event::CalendarSaved => calendar_ui::saved(self),
             Event::CalendarFailed(error) => calendar_ui::failed(self, &error),
-            Event::Contacts => people_ui::refresh(self),
+            Event::Contacts => {
+                self.photos.clear();
+                people_ui::refresh(self);
+                mail_ui::contacts_changed(self);
+            }
+            Event::Photos => {
+                self.photos.clear();
+                people_ui::refresh(self);
+                mail_ui::photos_changed(self);
+            }
             Event::ContactSaved => people_ui::saved(self),
             Event::ContactFailed(error) => people_ui::failed(self, &error),
         }

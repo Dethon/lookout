@@ -12,12 +12,14 @@ use lookout_core::store::RowId;
 use slint::{Model, ModelNotify, ModelTracker};
 
 use crate::MessageRow;
+use crate::photos::Photos;
 
 // Rows kept converted; a screenful is a few dozen.
 const CACHE_ROWS: usize = 400;
 
 pub struct MessageList {
     store: Rc<Store>,
+    photos: Rc<Photos>,
     rows: RefCell<Vec<RowId>>,
     cache: RefCell<HashMap<RowId, (MessageSummary, MessageRow)>>,
     notify: ModelNotify,
@@ -29,9 +31,10 @@ pub struct MessageList {
 }
 
 impl MessageList {
-    pub fn new(store: Rc<Store>) -> Rc<Self> {
+    pub fn new(store: Rc<Store>, photos: Rc<Photos>) -> Rc<Self> {
         Rc::new(Self {
             store,
+            photos,
             rows: RefCell::new(Vec::new()),
             cache: RefCell::new(HashMap::new()),
             notify: ModelNotify::default(),
@@ -126,6 +129,12 @@ impl MessageList {
         self.rows.borrow().len()
     }
 
+    /// Reads the rows again, as when contacts' pictures were found.
+    pub fn refresh(&self) {
+        self.cache.borrow_mut().clear();
+        self.notify.reset();
+    }
+
     pub fn summary(&self, index: usize) -> Option<MessageSummary> {
         let row = *self.rows.borrow().get(index)?;
         self.load(row).map(|(summary, _)| summary)
@@ -141,7 +150,8 @@ impl MessageList {
             return Some(hit.clone());
         }
         let summary = self.store.summary(row).ok().flatten()?;
-        let display = to_row(&summary, self.now.get());
+        let mut display = to_row(&summary, self.now.get());
+        display.picture = self.photos.for_address(&self.store, &person_of(&summary).address);
         let mut cache = self.cache.borrow_mut();
         if cache.len() >= CACHE_ROWS {
             cache.clear();
@@ -175,7 +185,18 @@ pub fn group_of(received: i64, now: chrono::DateTime<chrono::Local>) -> String {
     }
 }
 
+/// Who a row shows: the sender, or in Sent Items and Drafts the first
+/// recipient.
+fn person_of(summary: &MessageSummary) -> lookout_core::model::Address {
+    if summary.is_draft || summary.from.address.is_empty() {
+        summary.to.first().cloned().unwrap_or_default()
+    } else {
+        summary.from.clone()
+    }
+}
+
 pub fn to_row(summary: &MessageSummary, now: chrono::DateTime<chrono::Local>) -> MessageRow {
+    let person = person_of(summary);
     // In Sent Items and Drafts the other side is who it went to.
     let sender = if summary.is_draft || summary.from.address.is_empty() {
         crate::format::names(&summary.to)
@@ -195,6 +216,8 @@ pub fn to_row(summary: &MessageSummary, now: chrono::DateTime<chrono::Local>) ->
         attachment: summary.has_attachments,
         important: summary.high_importance,
         draft: summary.is_draft,
+        initials: crate::format::initials(person.display()).into(),
+        hue: crate::format::hue(&person.address),
         ..MessageRow::default()
     }
 }

@@ -35,6 +35,12 @@ signing in), against the hundreds the new Outlook takes.
   message can take the whole window. Toolbars drop their labels, then move
   the least used actions into a menu, as the room shrinks. The calendars'
   sidebar folds away the same way.
+- **People's faces**: contacts' pictures, fetched in the background and
+  kept in the cache, and everyone else's initials in a colour of their own,
+  in the message list (Settings can hide them there), the reading pane
+  and People. Over a message, its sender's picture
+  turns into a check box to pick several. A click on a message's sender
+  shows their card: write to them, or add them to your contacts.
 - **Original view**: messages are shown as sent, laid out and painted by
   [Blitz](https://github.com/DioxusLabs/blitz) inside the reading pane:
   about 15-25 MB more than the simplified view, against some 220 MB for
@@ -176,6 +182,9 @@ click, and a pane being resized.
   - `html`: turns mail HTML into blocks of Slint's `StyledText` markdown,
     escaping the text so nothing in it is read as markup.
   - `mail`, `calendar`, `people`: the changes the user makes.
+  - Contacts' pictures are fetched after contacts are synced, a hundred
+    at a time, shrunk to 144 pixels and kept in the cache; one found
+    missing is asked for again after a week.
 - `crates/app` (`lookout`): the Slint interface (`ui/`), a lazy message
   list model, and an engine thread (two Tokio workers) that owns the
   network and the cache's writer, syncs every minute, and asks each Inbox

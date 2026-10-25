@@ -40,6 +40,25 @@ const BODY: &str = r#"<html><head><style>p{margin:0}</style></head><body>
 <p>Thanks,<br>Carmen</p>
 </body></html>"#;
 
+/// A stand-in for a contact's picture: a warm gradient with a lighter disc.
+fn photo() -> slint::Image {
+    let size = 96u32;
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(size, size);
+    for (index, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = ((index as u32 % size) as f32, (index as u32 / size) as f32);
+        let head = ((x - 48.0).powi(2) + (y - 38.0).powi(2)).sqrt() < 18.0;
+        let body = ((x - 48.0).powi(2) + (y - 100.0).powi(2)).sqrt() < 36.0;
+        let shade = (y / size as f32 * 60.0) as u8;
+        *pixel = if head || body {
+            slint::Rgba8Pixel { r: 250, g: 226, b: 205, a: 255 }
+        } else {
+            slint::Rgba8Pixel { r: 70 + shade, g: 110 + shade / 2, b: 160, a: 255 }
+        };
+    }
+    lookout::photos::round(&mut buffer);
+    slint::Image::from_rgba8(buffer)
+}
+
 fn strings(items: &[&str]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(items.iter().map(|s| SharedString::from(*s)).collect::<Vec<_>>()))
 }
@@ -138,6 +157,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         preview: preview.into(),
         date: date.into(),
         unread,
+        initials: sender.split_whitespace().filter_map(|word| word.chars().next()).take(2).collect::<String>().into(),
+        hue: sender.len() as i32 % 10,
         ..MessageRow::default()
     };
     let mut rows = vec![
@@ -150,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     rows[1].attachment = true;
     rows[2].flagged = true;
+    rows[4].picture = photo();
     rows[3].important = true;
     mail.set_messages(ModelRc::new(VecModel::from(rows)));
 
@@ -170,6 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sender: "Carmen Ruiz".into(),
             sender_address: "carmen@contoso.com".into(),
             initials: "CR".into(),
+            hue: 3,
             to: "Ana Pérez; Bo Lindqvist".into(),
             date: "Fri 23/10/2026 10:31".into(),
             remote_images: true,
@@ -301,6 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: name.into(),
             email: email.into(),
             initials: initials.into(),
+            hue: email.len() as i32 % 10,
+            picture: if name.starts_with("Bo") { photo() } else { Default::default() },
             detail: email.into(),
         };
         people.set_contacts(ModelRc::new(VecModel::from(vec![
@@ -313,6 +338,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             shown: true,
             name: "Ana Pérez".into(),
             initials: "AP".into(),
+            hue: 5,
+            picture: photo(),
             lines: strings(&["Product manager, Contoso", "Mobile: +34 600 000 000"]),
             emails: strings(&["ana@example.com"]),
             notes: "Met at RustConf.".into(),

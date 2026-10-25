@@ -28,6 +28,8 @@ export global Shell {
     in-out property <bool> settings-open;
     in-out property <string> client-id;
     in-out property <bool> load-images;
+    in property <bool> list-avatars: true;
+    callback list-avatars-changed(bool);
     in property <string> version;
     // Windows: the tray, starting with it, and its notifications.
     in property <bool> desktop;
@@ -120,6 +122,9 @@ export global Mail {
     callback new-message();
     callback reply(int);
     callback edit-draft();
+    callback email-sender();
+    callback add-sender();
+    callback show-sender();
     callback show-images();
     in-out property <bool> original;
     callback toggle-original();
@@ -422,6 +427,19 @@ component SettingsDialog inherits Overlay {
                 Switch {
                     checked: Theme.dark;
                     toggled => { Shell.dark-changed(self.checked); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Show people's pictures in the message list";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Shell.list-avatars;
+                    toggled => { Shell.list-avatars-changed(self.checked); }
                 }
             }
             VerticalLayout {
@@ -809,6 +827,8 @@ export component MainWindow inherits Window {
                                 unread-only: Mail.unread-only;
                                 busy: Mail.busy;
                                 search-text <=> Mail.search-text;
+                                avatars: Shell.list-avatars;
+                                selection-count: Mail.selection-count;
                                 focus-request: Mail.focus-search-request;
                                 empty-text: Mail.searching ? "No messages found" : "Nothing here";
                                 select(index, control, shift) => {
@@ -872,6 +892,9 @@ export component MainWindow inherits Window {
                                 save-attachment(id) => { Mail.save-attachment(id); }
                                 link-clicked(link) => { Mail.link-clicked(link); }
                                 edit-draft => { Mail.edit-draft(); }
+                                email-sender => { Mail.email-sender(); }
+                                add-sender => { Mail.add-sender(); }
+                                show-sender => { Mail.show-sender(); }
                             }
                             if Mail.compose.open: ComposePane {
                                 horizontal-stretch: 1;

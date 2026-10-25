@@ -86,9 +86,9 @@ struct OriginalState {
 }
 
 impl MailState {
-    pub fn new(store: Rc<Store>) -> Self {
+    pub fn new(store: Rc<Store>, photos: Rc<crate::photos::Photos>) -> Self {
         Self {
-            list: MessageList::new(store),
+            list: MessageList::new(store, photos),
             view: RefCell::new(View::None),
             unread_only: Cell::new(false),
             selected: RefCell::new(None),
@@ -182,6 +182,24 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     mail.on_new_message(with_app!(app, |app| new_message(&app, Vec::new(), String::new())));
     mail.on_reply(with_app!(app, |app, kind| reply(&app, kind)));
     mail.on_edit_draft(with_app!(app, |app| edit_draft(&app)));
+    mail.on_email_sender(with_app!(app, |app| {
+        if let Some(sender) = sender_of_open(&app) {
+            new_message(&app, vec![sender], String::new());
+        }
+    }));
+    mail.on_add_sender(with_app!(app, |app| {
+        if let Some(sender) = sender_of_open(&app) {
+            let account = current_account(&app);
+            crate::people_ui::new_contact_for(&app, &account, &sender);
+        }
+    }));
+    mail.on_show_sender(with_app!(app, |app| {
+        if let Some(sender) = sender_of_open(&app)
+            && let Ok(Some((account, id))) = app.store.contact_with_address(&sender.address)
+        {
+            crate::people_ui::show_contact(&app, &account, &id);
+        }
+    }));
     mail.on_show_images(with_app!(app, |app| {
         app.mail.remote_shown.set(true);
         if app.mail.page.borrow().is_some() {
@@ -736,6 +754,9 @@ fn show_header(app: &App, summary: &MessageSummary) {
         sender: summary.from.display().into(),
         sender_address: summary.from.address.as_str().into(),
         initials: format::initials(summary.from.display()).into(),
+        hue: format::hue(&summary.from.address),
+        picture: app.photos.for_address(&app.store, &summary.from.address),
+        contact: app.store.contact_with_address(&summary.from.address).ok().flatten().is_some(),
         to: format::names(&summary.to).into(),
         cc: SharedString::new(),
         date: when::long_date(summary.received).into(),
@@ -826,6 +847,30 @@ pub fn opened(app: &Rc<App>, token: u64, detail: Option<MessageDetail>) {
 }
 
 /// Draws the open message again, its colours suited to the new theme.
+/// Contacts' pictures were found: the open message's sender may have one.
+pub fn photos_changed(app: &Rc<App>) {
+    app.mail.list.refresh();
+    contacts_changed(app);
+}
+
+/// The open message's sender may have become a contact, or have a picture.
+pub fn contacts_changed(app: &Rc<App>) {
+    let Some(address) = sender_of_open(app).map(|sender| sender.address) else { return };
+    let picture = app.photos.for_address(&app.store, &address);
+    let contact = app.store.contact_with_address(&address).ok().flatten().is_some();
+    update_reader(app, |reader| {
+        reader.picture = picture;
+        reader.contact = contact;
+    });
+}
+
+/// Who sent the message in the reading pane.
+fn sender_of_open(app: &App) -> Option<Address> {
+    let ui = app.ui()?;
+    let reader = ui.global::<Mail>().get_reader();
+    reader.open.then(|| Address { name: reader.sender.to_string(), address: reader.sender_address.to_string() })
+}
+
 pub fn theme_changed(app: &Rc<App>) {
     let Some((account, id)) = app.mail.selected.borrow().clone() else { return };
     let token = app.token();

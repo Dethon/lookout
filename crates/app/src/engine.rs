@@ -31,6 +31,12 @@ const MAX_PICTURE_HEIGHT: u32 = 3000;
 // their own size: room for a wide pane on a high-resolution screen.
 const MAX_PAGE_PICTURE_WIDTH: u32 = 1800;
 const MAX_PAGE_PICTURE_HEIGHT: u32 = 3600;
+// Contacts' pictures looked for per sync, how long one found missing is
+// believed missing, and the size they are kept at: room for the largest
+// avatar on a high-resolution screen.
+const PHOTOS_PER_SYNC: usize = 100;
+const PHOTO_RECHECK: i64 = 7 * 86400;
+const PHOTO_SIZE: u32 = 144;
 // Folders kept up to date even when not open.
 const ALWAYS_WATCHED: &[&str] = &["inbox", "drafts", "sentitems"];
 
@@ -87,6 +93,8 @@ pub enum Event {
     CalendarSaved,
     CalendarFailed(String),
     Contacts,
+    /// Contacts' pictures were found.
+    Photos,
     ContactSaved,
     ContactFailed(String),
     NewMail(Vec<MessageSummary>),
@@ -294,6 +302,13 @@ impl Inner {
                 }
             }
             self.emit(Event::Contacts);
+            let mut found = false;
+            for graph in &graphs {
+                found |= self.sync_photos(graph).await;
+            }
+            if found {
+                self.emit(Event::Photos);
+            }
         }
         self.emit(Event::Syncing(false));
         self.emit(Event::Status(format!("Up to date at {}", chrono::Local::now().format("%H:%M"))));
@@ -369,6 +384,36 @@ impl Inner {
             self.emit(Event::NewMail(result.arrived));
         }
         Ok(())
+    }
+
+    /// Looks for the pictures of contacts not looked at lately. Returns
+    /// whether any was found.
+    async fn sync_photos(&self, graph: &Graph) -> bool {
+        let account = graph.account_id().to_owned();
+        let due = {
+            let store = self.store.lock().unwrap();
+            if let Err(error) = store.drop_orphan_photos() {
+                log::warn!("forgetting pictures: {error}");
+            }
+            store.contacts_without_photos(&account, now() - PHOTO_RECHECK, PHOTOS_PER_SYNC).unwrap_or_default()
+        };
+        let mut found = false;
+        for id in due {
+            let data = match graph.bytes(&format!("/me/contacts/{}/photo/$value", graph::encode(&id))).await {
+                Ok(bytes) => small_photo(&bytes),
+                Err(Error::Graph { status: 404, .. }) => None,
+                Err(error) => {
+                    // Tried again at the next sync.
+                    log::info!("contact picture: {error}");
+                    break;
+                }
+            };
+            found |= data.is_some();
+            if let Err(error) = self.store.lock().unwrap().put_photo(&account, &id, data.as_deref(), now()) {
+                log::warn!("keeping a picture: {error}");
+            }
+        }
+        found
     }
 
     async fn sync_calendar(&self, graph: &Graph, start: i64, end: i64) {
@@ -860,6 +905,17 @@ fn shrink_picture(bytes: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// A contact's picture cut square and made small, as JPEG.
+fn small_photo(bytes: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let side = image.width().min(image.height());
+    let square = image.crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side);
+    let small = square.resize_exact(PHOTO_SIZE.min(side), PHOTO_SIZE.min(side), image::imageops::FilterType::Triangle);
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.into_rgb8().write_to(&mut out, image::ImageFormat::Jpeg).ok()?;
+    Some(out.into_inner())
+}
+
 /// Writes an attachment to Downloads, or to a temporary folder when it is
 /// only being opened. Never overwrites: a number is added instead.
 fn save_download(name: &str, bytes: &[u8], temporary: bool) -> std::io::Result<PathBuf> {
@@ -896,6 +952,18 @@ mod tests {
         let mut out = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn contact_pictures_come_square_and_small() {
+        let photo = small_photo(&png(400, 300)).unwrap();
+        let decoded = image::load_from_memory(&photo).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (PHOTO_SIZE, PHOTO_SIZE));
+        assert_eq!(image::guess_format(&photo).unwrap(), image::ImageFormat::Jpeg);
+        // Smaller ones aren't made larger.
+        let small = image::load_from_memory(&small_photo(&png(40, 60)).unwrap()).unwrap();
+        assert_eq!((small.width(), small.height()), (40, 40));
+        assert!(small_photo(b"not a picture").is_none());
     }
 
     #[test]

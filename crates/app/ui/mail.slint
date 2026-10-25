@@ -223,6 +223,10 @@ export component MessageList inherits Rectangle {
     in property <bool> unread-only;
     in property <bool> busy;
     in property <string> empty-text: "Nothing here";
+    // Each row shows its sender's picture or initials.
+    in property <bool> avatars: true;
+    // Messages picked with Ctrl or Shift, or the check boxes.
+    in property <int> selection-count;
     in-out property <string> search-text;
     // The row, and whether Ctrl and Shift were held.
     callback select(int, bool, bool);
@@ -349,14 +353,54 @@ export component MessageList inherits Rectangle {
                             }
                         }
                         clicked => { root.row-clicked(index); }
+                        // Over a row, or while several are picked, a check
+                        // box takes the avatar's place to pick more.
+                        property <bool> checking: root.avatars && (touch.has-hover || root.selection-count > 1);
+                        if root.avatars && !checking: Avatar {
+                            x: 14px;
+                            y: 10px;
+                            size: 32px;
+                            initials: message.initials;
+                            hue: message.hue;
+                            picture: message.picture;
+                        }
+                        if checking: Rectangle {
+                            property <bool> checked: message.selected && root.selection-count > 1;
+                            x: 14px;
+                            y: 10px;
+                            width: 32px;
+                            height: 32px;
+                            Rectangle {
+                                width: 20px;
+                                height: 20px;
+                                border-radius: 10px;
+                                border-width: checked ? 0px : 1.5px;
+                                border-color: check-touch.has-hover ? Theme.accent : Theme.text-muted;
+                                background: checked ? Theme.accent : check-touch.has-hover ? Theme.hover : Theme.surface;
+                                if checked: Icon {
+                                    icon: Icons.check;
+                                    color: Theme.on-accent;
+                                    width: 14px;
+                                    height: 14px;
+                                }
+                            }
+                            check-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                // As a Ctrl+click.
+                                clicked => { root.select(index, true, false); }
+                            }
+                        }
                         // Inside, so the row keeps its hover over the quick actions.
                         VerticalLayout {
-                            padding-left: 14px;
+                            padding-left: root.avatars ? 58px : 14px;
                             padding-right: 16px;
                             padding-top: 8px;
                             padding-bottom: 8px;
                             spacing: 2px;
                             HorizontalLayout {
+                                // Fixed, so the quick actions don't push the
+                                // lines below down as they show.
+                                height: 18px;
                                 spacing: 6px;
                                 if message.draft: Text {
                                     text: "[Draft]";
@@ -373,6 +417,8 @@ export component MessageList inherits Rectangle {
                                 }
                                 // Quick actions on hover, the date otherwise.
                                 if touch.has-hover: HorizontalLayout {
+                                    y: -2px;
+                                    height: 22px;
                                     spacing: 0px;
                                     IconButton {
                                         icon: message.unread ? Icons.mail-open : Icons.mail;
@@ -469,8 +515,8 @@ export component MessageList inherits Rectangle {
                 }
                 Divider {
                     y: parent.height - 1px;
-                    x: 14px;
-                    width: parent.width - 14px;
+                    x: root.avatars ? 58px : 14px;
+                    width: parent.width - self.x;
                 }
                 }
             }
@@ -638,6 +684,10 @@ export component ReadingPane inherits Rectangle {
     callback save-attachment(string);
     callback link-clicked(string);
     callback edit-draft();
+    // From the sender's card.
+    callback email-sender();
+    callback add-sender();
+    callback show-sender();
     background: Theme.surface;
 
     if root.selection-count > 1: VerticalLayout {
@@ -820,31 +870,122 @@ export component ReadingPane inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 12px;
-                Avatar {
+                sender-avatar := Avatar {
                     initials: root.reader.initials;
+                    hue: root.reader.hue;
+                    picture: root.reader.picture;
                     size: 40px;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { sender-card.show(); }
+                    }
+                    // Who sent it, and what can be done with them.
+                    sender-card := PopupWindow {
+                        x: 0;
+                        y: parent.height + 6px;
+                        width: min(340px, root.width - 40px);
+                        height: card-content.preferred-height;
+                        Rectangle {
+                            background: Theme.surface;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: Theme.divider;
+                            drop-shadow-blur: 16px;
+                            drop-shadow-offset-y: 4px;
+                            drop-shadow-color: #00000030;
+                            card-content := VerticalLayout {
+                                padding: 16px;
+                                spacing: 14px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Avatar {
+                                        initials: root.reader.initials;
+                                        hue: root.reader.hue;
+                                        picture: root.reader.picture;
+                                        size: 56px;
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text {
+                                            text: root.reader.sender;
+                                            font-size: 16px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: root.reader.sender-address;
+                                            color: Theme.text-muted;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: root.reader.contact ? "In your contacts" : "Not in your contacts";
+                                            color: Theme.text-faint;
+                                            font-size: Theme.small;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    ToolButton {
+                                        icon: Icons.send;
+                                        label: "Email";
+                                        primary: true;
+                                        clicked => {
+                                            sender-card.close();
+                                            root.email-sender();
+                                        }
+                                    }
+                                    ToolButton {
+                                        icon: root.reader.contact ? Icons.person : Icons.person-add;
+                                        label: root.reader.contact ? "Show contact" : "Add to contacts";
+                                        clicked => {
+                                            sender-card.close();
+                                            if (root.reader.contact) {
+                                                root.show-sender();
+                                            } else {
+                                                root.add-sender();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 VerticalLayout {
                     spacing: 2px;
                     HorizontalLayout {
                         spacing: 8px;
-                        Text {
-                            text: root.reader.sender;
-                            font-weight: 600;
-                            color: Theme.text;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: "<" + root.reader.sender-address + ">";
-                            color: Theme.text-muted;
-                            overflow: elide;
+                        HorizontalLayout {
                             horizontal-stretch: 1;
+                            alignment: start;
+                            Text {
+                                text: root.reader.sender;
+                                font-weight: 600;
+                                color: sender-touch.has-hover ? Theme.link : Theme.text;
+                                overflow: elide;
+                                min-width: min(self.preferred-width, 80px);
+                                sender-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { sender-card.show(); }
+                                }
+                            }
                         }
                         Text {
                             text: root.reader.date;
                             color: Theme.text-muted;
                             font-size: Theme.small;
+                            vertical-alignment: center;
                         }
+                    }
+                    if root.reader.sender-address != root.reader.sender: Text {
+                        text: root.reader.sender-address;
+                        color: Theme.text-muted;
+                        font-size: Theme.small + 1px;
+                        overflow: elide;
                     }
                     Text {
                         text: "To: " + root.reader.to;

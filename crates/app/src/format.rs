@@ -19,6 +19,17 @@ pub fn initials(name: &str) -> String {
     if initials.is_empty() { "?".into() } else { initials }
 }
 
+// As many as Theme.person-colors has.
+const PERSON_COLORS: u32 = 10;
+
+/// Which of the theme's colours a person's initials are drawn in: the same
+/// for an address every time, whatever its case.
+pub fn hue(address: &str) -> i32 {
+    // FNV-1a: stable across runs, unlike the standard library's hasher.
+    let hash = address.trim().to_lowercase().bytes().fold(0x811c_9dc5u32, |hash, byte| (hash ^ byte as u32).wrapping_mul(0x0100_0193));
+    (hash % PERSON_COLORS) as i32
+}
+
 pub fn size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let bytes = bytes as f64;
@@ -106,6 +117,12 @@ mod tests {
         assert_eq!(initials("bob.smith@example.com"), "BS");
         assert_eq!(initials("Zoë"), "Z");
         assert_eq!(initials(""), "?");
+    }
+
+    #[test]
+    fn hues_depend_on_the_address_alone() {
+        assert_eq!(hue("Ana@Example.com"), hue("ana@example.com"));
+        assert!((0..PERSON_COLORS as i32).contains(&hue("bo@example.com")));
     }
 
     #[test]

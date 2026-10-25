@@ -189,19 +189,29 @@ export component Splitter inherits Rectangle {
     }
 }
 
+// A person: their picture, or their initials in a colour of their own.
 export component Avatar inherits Rectangle {
     in property <string> initials;
     in property <length> size: 36px;
-    in property <color> tint: Theme.accent;
+    // Which of Theme.person-colors; the accent when out of range.
+    in property <int> hue: -1;
+    in property <image> picture;
+    property <color> tint: root.hue >= 0 && root.hue < Theme.person-colors.length ? Theme.person-colors[root.hue] : Theme.accent;
     width: size;
     height: size;
     border-radius: size / 2;
-    background: tint.with-alpha(0.18);
-    Text {
+    background: root.picture.width > 0 ? transparent : tint.with-alpha(Theme.dark ? 0.24 : 0.16);
+    if root.picture.width == 0: Text {
         text: root.initials;
         color: root.tint;
         font-size: root.size * 0.38;
         font-weight: 600;
+    }
+    if root.picture.width > 0: Image {
+        width: root.size;
+        height: root.size;
+        source: root.picture;
+        image-fit: cover;
     }
 }
 

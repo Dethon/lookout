@@ -165,7 +165,8 @@ and `SNAPSHOT_DARK=1` pick what to show.
   - `mail`, `calendar`, `people`: the changes the user makes.
 - `crates/app` (`lookout`): the Slint interface (`ui/`), a lazy message
   list model, and an engine thread (two Tokio workers) that owns the
-  network and the cache's writer and syncs every minute.
+  network and the cache's writer, syncs every minute, and asks each Inbox
+  for changes every five seconds, so new mail shows at once.
 
 `cargo test --workspace` includes a run against a stand-in Graph server
 covering paging, delta links, body caching, attachments,

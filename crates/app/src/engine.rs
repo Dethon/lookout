@@ -16,6 +16,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 const WORKER_THREADS: usize = 2;
 const CALENDAR_EVERY: Duration = Duration::from_secs(5 * 60);
 const CONTACTS_EVERY: Duration = Duration::from_secs(30 * 60);
+// Between full syncs each Inbox is asked for changes this often, so new
+// mail shows within seconds: Graph can't push to a desktop app. An Inbox
+// with nothing new costs one small request.
+const INBOX_EVERY: Duration = Duration::from_secs(5);
 // The window of events kept in the cache around today.
 const CALENDAR_BEFORE: i64 = 60 * 86400;
 const CALENDAR_AFTER: i64 = 365 * 86400;
@@ -176,6 +180,8 @@ async fn run(store_path: PathBuf, config: Config, notify: Notify, mut receiver: 
     tokio::spawn(inner.clone().sync_all());
 
     let mut poll_started = Instant::now();
+    let mut inbox_check = tokio::time::interval(INBOX_EVERY);
+    inbox_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let poll = Duration::from_secs(u64::from(inner.config.lock().unwrap().poll_seconds.max(15)));
         let wait = poll.saturating_sub(poll_started.elapsed());
@@ -190,6 +196,9 @@ async fn run(store_path: PathBuf, config: Config, notify: Notify, mut receiver: 
             () = tokio::time::sleep(wait) => {
                 poll_started = Instant::now();
                 tokio::spawn(inner.clone().sync_all());
+            }
+            _ = inbox_check.tick() => {
+                tokio::spawn(inner.clone().check_inboxes());
             }
         }
     }
@@ -318,9 +327,31 @@ impl Inner {
     }
 
     async fn sync_folder(&self, graph: &Graph, folder: &str, notify_new: bool) {
-        let account = graph.account_id().to_owned();
-        let lock = self.sync_lock(&account);
+        let lock = self.sync_lock(graph.account_id());
         let _guard = lock.lock().await;
+        if let Err(error) = self.sync_folder_locked(graph, folder, notify_new).await {
+            self.report("Updating messages", &error);
+        }
+    }
+
+    /// Looks for new mail in each account's Inbox, between full syncs. An
+    /// account already syncing is left to it, and failures to the full
+    /// sync to report, rather than every few seconds.
+    async fn check_inboxes(self: Arc<Self>) {
+        for graph in self.graphs() {
+            let inbox = self.store.lock().unwrap().well_known_folder(graph.account_id(), "inbox");
+            let Ok(Some(inbox)) = inbox else { continue };
+            let lock = self.sync_lock(graph.account_id());
+            let Ok(_guard) = lock.try_lock() else { continue };
+            if let Err(error) = self.sync_folder_locked(&graph, &inbox, true).await {
+                log::debug!("checking the inbox: {error}");
+            }
+        }
+    }
+
+    /// Syncs a folder, with its account's sync lock held.
+    async fn sync_folder_locked(&self, graph: &Graph, folder: &str, notify_new: bool) -> lookout_core::Result<()> {
+        let account = graph.account_id().to_owned();
         let mut pages = 0u32;
         let result = sync::sync_messages(graph, &self.store, folder, || {
             pages += 1;
@@ -329,19 +360,15 @@ impl Inner {
                 self.emit(Event::Messages { account: account.clone(), folder: folder.to_owned() });
             }
         })
-        .await;
-        match result {
-            Ok(result) => {
-                if result.changed {
-                    self.emit(Event::Messages { account: account.clone(), folder: folder.to_owned() });
-                    self.emit(Event::Folders);
-                }
-                if notify_new && !result.arrived.is_empty() {
-                    self.emit(Event::NewMail(result.arrived));
-                }
-            }
-            Err(error) => self.report("Updating messages", &error),
+        .await?;
+        if result.changed {
+            self.emit(Event::Messages { account: account.clone(), folder: folder.to_owned() });
+            self.emit(Event::Folders);
         }
+        if notify_new && !result.arrived.is_empty() {
+            self.emit(Event::NewMail(result.arrived));
+        }
+        Ok(())
     }
 
     async fn sync_calendar(&self, graph: &Graph, start: i64, end: i64) {

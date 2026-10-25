@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 const CONFIG_FILE: &str = "config.json";
 // Lookout's own Entra app registration: a public client, so not a secret.
 const CLIENT_ID: &str = "03441b94-3007-44a9-b3ac-7520f2e155ee";
-// Each minute: Graph has no push to desktop apps, so new mail is polled.
+// Each minute: Graph has no push to desktop apps, so mail is polled (the
+// Inbox more often; see `INBOX_EVERY` in the app's engine).
 const DEFAULT_POLL_SECONDS: u32 = 60;
 
 /// Settings kept in `config.json` in the data folder.

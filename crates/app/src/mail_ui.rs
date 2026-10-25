@@ -15,7 +15,7 @@ use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Shar
 use crate::app::App;
 use crate::engine::Request;
 use crate::models::MessageList;
-use crate::{AttachmentRow, BodyBlock, Compose, FolderRow, Icons, Mail, MainWindow, Reader, body, format};
+use crate::{AttachmentRow, BodyBlock, Compose, FolderRow, Icons, Mail, MainWindow, Reader, Suggestion, body, format};
 
 // Typing in the search box searches after this pause.
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
@@ -1324,10 +1324,31 @@ fn suggest(app: &Rc<App>, field: i32, text: &str) {
     let Some(ui) = app.ui() else { return };
     let mail = ui.global::<Mail>();
     let typed = format::typed_address(text);
-    let found = if typed.chars().count() >= 2 { app.store.suggest_addresses(typed, SUGGESTIONS).unwrap_or_default() } else { Vec::new() };
-    let labels: Vec<SharedString> = found.iter().map(|address| format::address(address).into()).collect();
-    mail.set_suggestion_field(if labels.is_empty() { -1 } else { field });
-    mail.set_suggestions(ModelRc::new(VecModel::from(labels)));
+    // Neither the user's own addresses nor those already in the field.
+    let (present, _) = format::parse_addresses(text);
+    let mut skipped: std::collections::HashSet<String> =
+        present.iter().map(|address| address.address.to_lowercase()).collect();
+    skipped.extend(app.accounts.borrow().iter().map(|account| account.email.to_lowercase()));
+    let found = if typed.chars().count() >= 2 {
+        app.store.suggest_addresses(typed, SUGGESTIONS + skipped.len()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let rows: Vec<Suggestion> = found
+        .iter()
+        .filter(|address| !skipped.contains(&address.address.to_lowercase()))
+        .take(SUGGESTIONS)
+        .map(|address| Suggestion {
+            name: address.name.as_str().into(),
+            address: address.address.as_str().into(),
+            initials: format::initials(address.display()).into(),
+            hue: format::hue(&address.address),
+            picture: app.photos.for_address(&app.store, &address.address),
+            label: format::address(address).into(),
+        })
+        .collect();
+    mail.set_suggestion_field(if rows.is_empty() { -1 } else { field });
+    mail.set_suggestions(ModelRc::new(VecModel::from(rows)));
 }
 
 fn attachment(app: &Rc<App>, id: &str, open: bool) {

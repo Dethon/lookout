@@ -234,6 +234,10 @@ export component Field inherits Rectangle {
     in property <length> label-width: 64px;
     callback edited(string);
     callback accepted();
+    // Keys a list of suggestions under the field may want: "up", "down",
+    // "enter", "tab" and "escape". Returns whether one was used.
+    callback navigate(string) -> bool;
+    out property <bool> focused: input.has-focus;
     height: 36px;
     HorizontalLayout {
         spacing: 8px;
@@ -258,6 +262,20 @@ export component Field inherits Rectangle {
                 selection-background-color: Theme.selected-strong;
                 edited => { root.edited(self.text); }
                 accepted => { root.accepted(); }
+                key-pressed(event) => {
+                    if (event.modifiers.control || event.modifiers.alt) {
+                        return reject;
+                    }
+                    if (root.navigate(event.text == Key.UpArrow ? "up"
+                            : event.text == Key.DownArrow ? "down"
+                            : event.text == Key.Return ? "enter"
+                            : event.text == Key.Tab ? "tab"
+                            : event.text == Key.Escape ? "escape"
+                            : "")) {
+                        return accept;
+                    }
+                    reject
+                }
             }
             if input.text == "" && root.placeholder != "": Text {
                 x: 0;
@@ -274,6 +292,11 @@ export component Field inherits Rectangle {
     }
     public function focus-input() {
         input.focus();
+    }
+    // After the text was changed from outside, as by a picked suggestion.
+    public function cursor-to-end() {
+        input.focus();
+        input.set-selection-offsets(1000000, 1000000);
     }
 }
 

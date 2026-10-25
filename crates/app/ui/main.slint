@@ -3,7 +3,7 @@ import { Theme, Icons } from "theme.slint";
 import { Panes } from "panes.slint";
 import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter } from "widgets.slint";
 import {
-    Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult,
+    Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult, Suggestion,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
     ContactRow, ContactView, ContactEditor,
 } from "types.slint";
@@ -11,7 +11,7 @@ import { FolderPane, FolderStrip, MessageList, ReadingPane, ComposePane } from "
 import { CalendarSidebar, CalendarView, EventDetailDialog, EventEditorDialog } from "calendar.slint";
 import { PeopleView, ContactEditorDialog } from "people.slint";
 
-export { Palette, Theme, Icons, Panes, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose,
+export { Palette, Theme, Icons, Panes, Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, Suggestion,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor,
     ContactRow, ContactView, ContactEditor }
 
@@ -89,7 +89,7 @@ export global Mail {
     in-out property <bool> select-text;
     in-out property <Compose> compose;
     in property <[AttachmentRow]> compose-attachments;
-    in property <[string]> suggestions;
+    in property <[Suggestion]> suggestions;
     in property <int> suggestion-field: -1;
     in-out property <bool> move-open;
     in property <[FolderRow]> move-targets;

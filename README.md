@@ -25,9 +25,10 @@ signing in), against the hundreds the new Outlook takes.
   original quoted by the server); new mail with Cc/Bcc, a formatting
   toolbar (bold, italic, strikethrough, lists, quotes, links, written as
   markdown) with a preview, per-account signatures, attachments of any
-  size, importance and address completion; drafts; instant offline search
-  (SQLite FTS5) and server search for older mail; unread-only filter; new
-  mail notices.
+  size, importance and address completion (contacts, people who wrote to
+  you and people you wrote to, those you write to most first; arrow keys
+  and Enter or Tab pick one); drafts; instant offline search (SQLite FTS5)
+  and server search for older mail; unread-only filter; new mail notices.
 - **Layout**: the folder pane and the message list are resized by dragging
   their edges, and kept that way; the folder pane can be put away into a
   strip of folder icons with unread badges (Ctrl+B), and gives way to it by
@@ -37,8 +38,8 @@ signing in), against the hundreds the new Outlook takes.
   sidebar folds away the same way.
 - **People's faces**: contacts' pictures, fetched in the background and
   kept in the cache, and everyone else's initials in a colour of their own,
-  in the message list (Settings can hide them there), the reading pane
-  and People. Over a message, its sender's picture
+  in the message list (Settings can hide them there), the reading pane,
+  address completion and People. Over a message, its sender's picture
   turns into a check box to pick several. A click on a message's sender
   shows their card: write to them, or add them to your contacts.
 - **Original view**: messages are shown as sent, laid out and painted by

@@ -49,6 +49,17 @@ export struct MessageRow {
     picture: image,
 }
 
+// A person to complete a recipient field with.
+export struct Suggestion {
+    name: string,
+    address: string,
+    initials: string,
+    hue: int,
+    picture: image,
+    // As written into the field: "Name <address>".
+    label: string,
+}
+
 // One picture of a picture row; sizes are the sender's, scaled to fit.
 export struct Picture {
     image: image,

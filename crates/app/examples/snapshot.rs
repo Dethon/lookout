@@ -210,8 +210,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             kind: 1,
             ..Compose::default()
         });
-        mail.set_suggestions(strings(&["Bo Lindqvist <bo@example.com>", "Borja Gil <borja@example.com>"]));
+        let suggestion = |name: &str, address: &str, initials: &str, hue: i32| Suggestion {
+            name: name.into(),
+            address: address.into(),
+            initials: initials.into(),
+            hue,
+            picture: if hue == 4 { photo() } else { Default::default() },
+            label: format!("{name} <{address}>").into(),
+        };
+        mail.set_suggestions(ModelRc::new(VecModel::from(vec![
+            suggestion("Bo Lindqvist", "bo@example.com", "BL", 1),
+            suggestion("Borja Gil", "borja@example.com", "BG", 4),
+            suggestion("", "boris@example.org", "B", 6),
+        ])));
         mail.set_suggestion_field(0);
+        mail.on_suggestion_picked(|_, current, picked| {
+            let kept = current.rfind(';').map(|at| &current[..=at]).unwrap_or_default();
+            format!("{kept} {picked}; ").trim_start().into()
+        });
     }
 
     if page == "calendar" || page == "month" {

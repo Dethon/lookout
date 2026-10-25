@@ -900,8 +900,11 @@ impl Store {
         Ok(statement.query_row([address.trim()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
     }
 
-    /// Addresses for completing a recipient: contacts first, then people
-    /// mail came from, most frequent first.
+    /// Addresses for completing a recipient: contacts first, then the
+    /// people mail was sent to or came from. Those written to count three
+    /// times as much as senders, automatic senders (no-reply) not at all,
+    /// and the most recent come first among equals. Each comes with the
+    /// name it was last seen with.
     pub fn suggest_addresses(&self, prefix: &str, limit: usize) -> Result<Vec<Address>> {
         let prefix = prefix.trim();
         if prefix.is_empty() {
@@ -922,12 +925,37 @@ impl Store {
             }
         }
         let mut statement = self.db.prepare_cached(
-            "SELECT from_name, from_address FROM messages
-             WHERE from_address LIKE ?1 OR from_name LIKE ?1 OR from_name LIKE ?2
-             GROUP BY lower(from_address) ORDER BY COUNT(*) DESC LIMIT ?3",
+            "WITH sent AS (
+                 SELECT m.to_json, m.cc_json, m.received FROM messages m
+                 JOIN folders f ON f.account = m.account AND f.id = m.folder_id
+                 WHERE f.well_known = 'sentitems'
+             ),
+             people (name, address, weight, at) AS (
+                 SELECT from_name, from_address,
+                        CASE WHEN from_address LIKE '%noreply%' OR from_address LIKE '%no_reply%'
+                             OR from_address LIKE '%donotreply%' OR from_address LIKE '%do_not_reply%'
+                             THEN 0 ELSE 1 END,
+                        received
+                 FROM messages WHERE from_address != ''
+                 UNION ALL
+                 SELECT json_extract(r.value, '$.name'), json_extract(r.value, '$.address'), 3, sent.received
+                 FROM sent, json_each(sent.to_json) r
+                 UNION ALL
+                 SELECT json_extract(r.value, '$.name'), json_extract(r.value, '$.address'), 3, sent.received
+                 FROM sent, json_each(sent.cc_json) r
+             )
+             SELECT max(CASE WHEN name != '' AND name != address THEN printf('%020d', at) || name END),
+                    max(printf('%020d', at) || address)
+             FROM people
+             WHERE address != '' AND (address LIKE ?1 OR name LIKE ?1 OR name LIKE ?2)
+             GROUP BY lower(address)
+             ORDER BY SUM(weight) DESC, MAX(at) DESC
+             LIMIT ?3",
         )?;
         let rows = statement.query_map(params![pattern, word, limit as i64], |row| {
-            Ok(Address { name: row.get(0)?, address: row.get(1)? })
+            // Each follows the time it was seen, which picked the latest.
+            let unstamp = |stamped: Option<String>| stamped.and_then(|s| s.get(20..).map(str::to_owned)).unwrap_or_default();
+            Ok(Address { name: unstamp(row.get(0)?), address: unstamp(row.get(1)?) })
         })?;
         for address in rows {
             let address = address?;
@@ -1116,11 +1144,70 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "timing, run by hand"]
+    fn suggestions_stay_fast() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut sent = folder("sent");
+        sent.well_known = Some("sentitems".into());
+        store.put_folders("a", &[folder("inbox"), sent]).unwrap();
+        let records: Vec<MessageRecord> = (0..50_000)
+            .map(|i| {
+                let mut message = record(&i.to_string(), if i % 10 == 0 { "sent" } else { "inbox" }, "subject", i);
+                message.summary.from = Address { name: format!("Person {}", i % 3000), address: format!("p{}@example.com", i % 3000) };
+                message.summary.to = vec![Address { name: format!("Andrea {}", i % 500), address: format!("andrea{}@example.com", i % 500) }];
+                message.cc = vec![Address { name: "Bo".into(), address: "bo@example.com".into() }];
+                message
+            })
+            .collect();
+        store.put_messages(&records).unwrap();
+        for typed in ["an", "andrea 4", "p12"] {
+            let start = std::time::Instant::now();
+            let found = store.suggest_addresses(typed, 6).unwrap();
+            eprintln!("{typed}: {} in {:?}", found.len(), start.elapsed());
+        }
+    }
+
+    #[test]
     fn suggestions_come_from_senders() {
         let mut store = Store::open_in_memory().unwrap();
         store.put_messages(&[record("1", "inbox", "x", 1), record("2", "inbox", "y", 2)]).unwrap();
         let found = store.suggest_addresses("pér", 5).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].address, "ana@example.com");
+    }
+
+    #[test]
+    fn suggestions_rank_people_written_to_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut sent_folder = folder("sent");
+        sent_folder.well_known = Some("sentitems".into());
+        store.put_folders("a", &[folder("inbox"), sent_folder]).unwrap();
+        let from = |id: &str, name: &str, address: &str, received: i64| {
+            let mut message = record(id, "inbox", "x", received);
+            message.summary.from = Address { name: name.into(), address: address.into() };
+            message
+        };
+        let mut written = record("3", "sent", "y", 5);
+        written.summary.from = Address { name: "Me".into(), address: "me@example.com".into() };
+        written.summary.to = vec![Address { name: "Anabel Old".into(), address: "anabel@example.com".into() }];
+        let mut again = record("4", "sent", "z", 9);
+        again.summary.from = written.summary.from.clone();
+        again.cc = vec![Address { name: "Anabel Ruiz".into(), address: "Anabel@example.com".into() }];
+        store
+            .put_messages(&[
+                from("1", "Ana Pérez", "ana@example.com", 1),
+                from("2", "Ana Pérez", "ana@example.com", 2),
+                from("5", "Anagram", "noreply@anagram.test", 8),
+                written,
+                again,
+            ])
+            .unwrap();
+        let found = store.suggest_addresses("ana", 5).unwrap();
+        let addresses: Vec<&str> = found.iter().map(|a| a.address.as_str()).collect();
+        assert_eq!(addresses, ["Anabel@example.com", "ana@example.com", "noreply@anagram.test"]);
+        // The name it was last seen with.
+        assert_eq!(found[0].name, "Anabel Ruiz");
+        // People written to are found by their names too.
+        assert_eq!(store.suggest_addresses("ruiz", 5).unwrap()[0].address, "Anabel@example.com");
     }
 }

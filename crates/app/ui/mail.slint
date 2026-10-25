@@ -4,7 +4,7 @@ import { ListView, ScrollView, TextEdit, ComboBox, CheckBox, Spinner } from "std
 import { Theme, Icons } from "theme.slint";
 import { Panes } from "panes.slint";
 import { Icon, IconButton, ToolButton, Avatar, Divider, VDivider, Field, SearchBox, Tip, MoreButton, MenuEntry } from "widgets.slint";
-import { FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult } from "types.slint";
+import { FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult, Suggestion } from "types.slint";
 
 export component FolderPane inherits Rectangle {
     in property <[FolderRow]> folders;
@@ -1228,9 +1228,57 @@ export component ComposePane inherits Rectangle {
     // "Name <address>" of each account, for the From box.
     in property <[string]> account-labels;
     in property <[AttachmentRow]> attachments;
-    in property <[string]> suggestions;
+    in property <[Suggestion]> suggestions;
     // Which field the suggestions are for: 0 to, 1 cc, 2 bcc.
     in property <int> suggestion-field;
+    // The suggestion Enter or Tab picks, and whether Escape put them away.
+    property <int> highlighted;
+    property <bool> suggestions-dismissed;
+    changed suggestions => {
+        root.highlighted = 0;
+        root.suggestions-dismissed = false;
+    }
+    property <bool> suggesting: !root.suggestions-dismissed && root.suggestions.length > 0
+        && ((root.suggestion-field == 0 && to-field.focused)
+            || (root.suggestion-field == 1 && cc-field.focused)
+            || (root.suggestion-field == 2 && bcc-field.focused));
+
+    function pick(index: int) {
+        if (root.suggestion-field == 0) {
+            root.compose.to = root.suggestion-picked(0, root.compose.to, root.suggestions[index].label);
+            to-field.cursor-to-end();
+        } else if (root.suggestion-field == 1) {
+            root.compose.cc = root.suggestion-picked(1, root.compose.cc, root.suggestions[index].label);
+            cc-field.cursor-to-end();
+        } else if (root.suggestion-field == 2) {
+            root.compose.bcc = root.suggestion-picked(2, root.compose.bcc, root.suggestions[index].label);
+            bcc-field.cursor-to-end();
+        }
+    }
+
+    // Keys from a recipient field, for the suggestions under it.
+    function navigate(field: int, key: string) -> bool {
+        if (!root.suggesting || field != root.suggestion-field) {
+            return false;
+        }
+        if (key == "down") {
+            root.highlighted = root.highlighted + 1 >= root.suggestions.length ? 0 : root.highlighted + 1;
+            return true;
+        }
+        if (key == "up") {
+            root.highlighted = root.highlighted <= 0 ? root.suggestions.length - 1 : root.highlighted - 1;
+            return true;
+        }
+        if (key == "enter" || key == "tab") {
+            root.pick(root.highlighted);
+            return true;
+        }
+        if (key == "escape") {
+            root.suggestions-dismissed = true;
+            return true;
+        }
+        false
+    }
     callback send(Compose);
     callback discard();
     callback save-draft(Compose);
@@ -1338,6 +1386,7 @@ export component ComposePane inherits Rectangle {
                     text <=> root.compose.to;
                     placeholder: "Names or addresses, separated by ;";
                     edited(text) => { root.address-typed(0, text); }
+                    navigate(key) => { return root.navigate(0, key); }
                 }
                 if !root.compose.show-cc: ToolButton {
                     y: (parent.height - self.height) / 2;
@@ -1346,63 +1395,22 @@ export component ComposePane inherits Rectangle {
                     clicked => { root.compose.show-cc = true; }
                 }
             }
-            if root.suggestion-field == 0 && root.suggestions.length > 0: suggestions-list := VerticalLayout {
-                for suggestion in root.suggestions: Rectangle {
-                    height: 30px;
-                    background: suggestion-touch.has-hover ? Theme.hover : Theme.surface-alt;
-                    Text {
-                        x: 72px;
-                        text: suggestion;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    suggestion-touch := TouchArea {
-                        clicked => { root.compose.to = root.suggestion-picked(0, root.compose.to, suggestion); }
-                    }
-                }
-            }
-            if root.compose.show-cc: Field {
+            // Always there, so the suggestions can be placed under them.
+            cc-field := Field {
                 label: "Cc";
                 text <=> root.compose.cc;
+                visible: root.compose.show-cc;
+                height: root.compose.show-cc ? 36px : 0px;
                 edited(text) => { root.address-typed(1, text); }
+                navigate(key) => { return root.navigate(1, key); }
             }
-            if root.compose.show-cc && root.suggestion-field == 1 && root.suggestions.length > 0: VerticalLayout {
-                for suggestion in root.suggestions: Rectangle {
-                    height: 30px;
-                    background: cc-touch.has-hover ? Theme.hover : Theme.surface-alt;
-                    Text {
-                        x: 72px;
-                        text: suggestion;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    cc-touch := TouchArea {
-                        clicked => { root.compose.cc = root.suggestion-picked(1, root.compose.cc, suggestion); }
-                    }
-                }
-            }
-            if root.compose.show-cc: Field {
+            bcc-field := Field {
                 label: "Bcc";
                 text <=> root.compose.bcc;
+                visible: root.compose.show-cc;
+                height: root.compose.show-cc ? 36px : 0px;
                 edited(text) => { root.address-typed(2, text); }
-            }
-            if root.compose.show-cc && root.suggestion-field == 2 && root.suggestions.length > 0: VerticalLayout {
-                for suggestion in root.suggestions: Rectangle {
-                    height: 30px;
-                    background: bcc-touch.has-hover ? Theme.hover : Theme.surface-alt;
-                    Text {
-                        x: 72px;
-                        text: suggestion;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    bcc-touch := TouchArea {
-                        clicked => { root.compose.bcc = root.suggestion-picked(2, root.compose.bcc, suggestion); }
-                    }
-                }
+                navigate(key) => { return root.navigate(2, key); }
             }
             Field {
                 label: "Subject";
@@ -1514,4 +1522,65 @@ export component ComposePane inherits Rectangle {
         }
     }
 
+    // People matching what is typed, under the field.
+    if root.suggesting: Rectangle {
+        property <length> field-bottom: (root.suggestion-field == 0 ? to-field.absolute-position.y + to-field.height
+            : root.suggestion-field == 1 ? cc-field.absolute-position.y + cc-field.height
+            : bcc-field.absolute-position.y + bcc-field.height) - root.absolute-position.y;
+        x: 84px;
+        y: self.field-bottom + 2px;
+        width: min(440px, root.width - self.x - 16px);
+        height: people.preferred-height;
+        background: Theme.surface;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.divider;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000030;
+        people := VerticalLayout {
+            padding: 4px;
+            for person[index] in root.suggestions: Rectangle {
+                height: 44px;
+                border-radius: Theme.radius;
+                background: index == root.highlighted ? Theme.selected : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 10px;
+                    Avatar {
+                        y: (parent.height - self.height) / 2;
+                        initials: person.initials;
+                        hue: person.hue;
+                        picture: person.picture;
+                        size: 30px;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: person.name != "" ? person.name : person.address;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        if person.name != "": Text {
+                            text: person.address;
+                            color: Theme.text-muted;
+                            font-size: Theme.small;
+                            overflow: elide;
+                        }
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    moved => { root.highlighted = index; }
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            root.highlighted = index;
+                        }
+                    }
+                    clicked => { root.pick(index); }
+                }
+            }
+        }
+    }
 }

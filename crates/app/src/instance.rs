@@ -36,7 +36,7 @@ fn asked() {
     });
 }
 
-fn bring_forward(ui: &crate::MainWindow) {
+pub fn bring_forward(ui: &crate::MainWindow) {
     use slint::winit_030::WinitWindowAccessor;
 
     let window = ui.window();

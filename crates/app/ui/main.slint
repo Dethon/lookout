@@ -28,6 +28,11 @@ export global Shell {
     in-out property <string> client-id;
     in-out property <bool> load-images;
     in property <string> version;
+    // Windows: the tray, starting with it, and its notifications.
+    in property <bool> desktop;
+    in property <bool> close-to-tray;
+    in property <bool> notify-new-mail;
+    in property <bool> start-with-windows;
     callback add-account();
     callback remove-account(string);
     callback signature-edited(string, string);
@@ -35,6 +40,9 @@ export global Shell {
     callback save-settings();
     callback dark-changed(bool);
     callback dismiss-toast();
+    callback close-to-tray-changed(bool);
+    callback notify-new-mail-changed(bool);
+    callback start-with-windows-changed(bool);
     callback page-changed(Page);
     // A shortcut: the key's name, Ctrl, Shift. Returns whether it was used.
     callback key(string, bool, bool) -> bool;
@@ -418,6 +426,46 @@ component SettingsDialog inherits Overlay {
             LineEdit {
                 text <=> Shell.client-id;
                 placeholder-text: "Lookout's own";
+            }
+        }
+        if Shell.desktop: Divider { }
+        if Shell.desktop: HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Show new mail in Windows notifications";
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Switch {
+                checked: Shell.notify-new-mail;
+                toggled => { Shell.notify-new-mail-changed(self.checked); }
+            }
+        }
+        if Shell.desktop: HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Keep running in the notification area when closed";
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Switch {
+                checked: Shell.close-to-tray;
+                toggled => { Shell.close-to-tray-changed(self.checked); }
+            }
+        }
+        if Shell.desktop: HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Start Lookout when you sign in to Windows";
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Switch {
+                checked: Shell.start-with-windows;
+                toggled => { Shell.start-with-windows-changed(self.checked); }
             }
         }
         Divider { }

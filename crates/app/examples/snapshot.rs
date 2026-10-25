@@ -68,6 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if page == "settings" {
         shell.set_settings_open(true);
+        shell.set_desktop(true);
+        shell.set_close_to_tray(true);
+        shell.set_notify_new_mail(true);
     }
     let update = ui.global::<AppUpdate>();
     update.set_automatic(true);

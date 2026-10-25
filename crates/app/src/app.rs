@@ -10,7 +10,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::engine::{Engine, Event, Request};
 use crate::{AccountRow, MainWindow, Page, Shell as AppGlobal, Theme};
-use crate::{calendar_ui, mail_ui, people_ui, update_ui};
+use crate::{autostart, calendar_ui, mail_ui, notify, people_ui, tray, update_ui};
 
 // How long a notice stays up.
 const TOAST_TIME: Duration = Duration::from_secs(6);
@@ -41,6 +41,9 @@ pub struct App {
     pub update: update_ui::UpdateState,
     next_token: Cell<u64>,
     toast_timer: Timer,
+    /// The notification area icon, while closing the window keeps Lookout
+    /// running.
+    tray: RefCell<Option<tray::Tray>>,
 }
 
 impl App {
@@ -69,11 +72,58 @@ impl App {
             accounts: RefCell::new(Vec::new()),
             next_token: Cell::new(1),
             toast_timer: Timer::default(),
+            tray: RefCell::new(None),
         });
         APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
         app.wire(ui);
         crate::repaint::install(ui);
+        app.set_tray(app.config.borrow().close_to_tray);
+        autostart::refresh();
         Ok(app)
+    }
+
+    /// Shows the window, unless Windows started Lookout as the user signed
+    /// in: then it waits in the tray, or minimized without one.
+    pub fn show(&self) -> Result<(), slint::PlatformError> {
+        let Some(ui) = self.ui() else { return Ok(()) };
+        if !autostart::hidden() {
+            return ui.show();
+        }
+        if self.tray.borrow().is_none() {
+            ui.show()?;
+            ui.window().set_minimized(true);
+        }
+        Ok(())
+    }
+
+    /// Takes the tray icon away as Lookout quits, rather than leave it
+    /// there until the pointer passes over it.
+    pub fn quit(&self) {
+        self.tray.borrow_mut().take();
+    }
+
+    fn set_tray(&self, on: bool) {
+        let mut tray = self.tray.borrow_mut();
+        if on && tray.is_none() {
+            *tray = tray::Tray::new();
+        } else if !on {
+            tray.take();
+        }
+    }
+
+    /// Brings the window forward with a message open.
+    pub fn show_message(self: &Rc<Self>, account: &str, folder: &str, id: &str) {
+        let Some(ui) = self.ui() else { return };
+        crate::instance::bring_forward(&ui);
+        mail_ui::show_message(self, account, folder, id);
+    }
+
+    /// The user is looking at the window.
+    fn in_front(&self) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+
+        let Some(ui) = self.ui() else { return false };
+        ui.window().with_winit_window(|window| window.has_focus()).unwrap_or(false)
     }
 
     pub fn token(&self) -> u64 {
@@ -95,6 +145,10 @@ impl App {
         global.set_load_images(config.load_remote_images);
         global.set_version(env!("CARGO_PKG_VERSION").into());
         global.set_status("Starting…".into());
+        global.set_desktop(notify::AVAILABLE);
+        global.set_close_to_tray(config.close_to_tray);
+        global.set_notify_new_mail(config.notify_new_mail);
+        global.set_start_with_windows(autostart::enabled());
         drop(config);
         crate::set_color_scheme(ui, self.config.borrow().dark);
 
@@ -140,6 +194,40 @@ impl App {
                 app.persist();
                 mail_ui::theme_changed(&app);
             }
+        });
+        let app = Rc::downgrade(self);
+        global.on_close_to_tray_changed(move |on| {
+            if let Some(app) = app.upgrade() {
+                app.config.borrow_mut().close_to_tray = on;
+                app.persist();
+                app.set_tray(on);
+            }
+        });
+        let app = Rc::downgrade(self);
+        global.on_notify_new_mail_changed(move |on| {
+            if let Some(app) = app.upgrade() {
+                app.config.borrow_mut().notify_new_mail = on;
+                app.persist();
+            }
+        });
+        let app = Rc::downgrade(self);
+        global.on_start_with_windows_changed(move |on| {
+            if let Some(app) = app.upgrade() {
+                if let Err(error) = autostart::set(on) {
+                    app.toast(&format!("Couldn't change starting with Windows: {error}"));
+                }
+                if let Some(ui) = app.ui() {
+                    ui.global::<AppGlobal>().set_start_with_windows(autostart::enabled());
+                }
+            }
+        });
+        let app = Rc::downgrade(self);
+        ui.window().on_close_requested(move || {
+            // With no tray icon there would be no way back to the window.
+            if !app.upgrade().is_some_and(|app| app.tray.borrow().is_some()) {
+                _ = slint::quit_event_loop();
+            }
+            slint::CloseRequestResponse::HideWindow
         });
         let app = Rc::downgrade(self);
         global.on_dismiss_toast(move || {
@@ -295,7 +383,9 @@ impl App {
                     many => format!("{} new messages", many.len()),
                 };
                 self.toast(&text);
-                crate::notify::new_mail(&text);
+                if self.config.borrow().notify_new_mail && !self.in_front() {
+                    notify::new_mail(&messages);
+                }
             }
             Event::Folders => mail_ui::folders_changed(self),
             Event::Messages { account, folder } => mail_ui::messages_changed(self, &account, &folder),

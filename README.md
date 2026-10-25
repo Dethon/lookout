@@ -43,6 +43,11 @@ signing in), against the hundreds the new Outlook takes.
   accept, tentative, decline; join online meetings.
 - **People**: contacts across accounts, search, create, edit, delete, mail
   a contact.
+- **Windows**: new mail in the Inbox shows in Windows notifications while
+  the window is in the background, and a click on one opens the message;
+  closing the window leaves Lookout in the notification area, where a
+  click on its icon brings it back and its menu quits; and it can start
+  when you sign in, waiting there. Settings turns each on or off.
 - Light and dark themes; keyboard shortcuts.
 - **Updates**: Lookout looks for a new release when it starts and once a
   day (Settings can turn that off). Installed with the Windows installer,
@@ -72,8 +77,8 @@ signing in), against the hundreds the new Outlook takes.
 Compared with Outlook: true WYSIWYG composing (formatting is written as
 markdown, with a preview), conversation view, Focused Inbox, rules, categories (shown, not edited),
 shared and delegated mailboxes and calendars, editing a whole recurring
-series (single occurrences can be edited), scheduling assistant, offline
-sending queue, and Windows toast notifications.
+series (single occurrences can be edited), scheduling assistant, and offline
+sending queue.
 
 ## Install
 

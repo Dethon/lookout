@@ -14,7 +14,9 @@
 ;
 ; Installs for the current user only, so it never asks for administrator
 ; rights. Everything it writes lives under the install directory and HKCU,
-; and the uninstaller removes exactly that. The user's accounts, cache and
+; and the uninstaller removes exactly that, with what Lookout itself writes
+; there: its Run value, when it starts with Windows, and the name and icon
+; registered for its notifications. The user's accounts, cache and
 ; settings, in %LOCALAPPDATA%\lookout, are kept for a reinstall.
 ;
 ; Lookout needs nothing else: SQLite comes with Windows (winsqlite3.dll), and
@@ -34,6 +36,9 @@ SetCompressor /SOLID lzma
 !define DESCRIPTION "A fast, light client for Outlook mail, calendars and contacts"
 !define SETTINGS_KEY "Software\Lookout"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lookout"
+; Written by Lookout: see crates/app/src/autostart.rs and notify.rs.
+!define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!define NOTIFICATIONS_KEY "Software\Classes\AppUserModelId\Dethon.Lookout"
 
 Name "${NAME}"
 OutFile "${OUTFILE}"
@@ -156,4 +161,6 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   DeleteRegKey HKCU "${SETTINGS_KEY}"
+  DeleteRegValue HKCU "${RUN_KEY}" "${NAME}"
+  DeleteRegKey HKCU "${NOTIFICATIONS_KEY}"
 SectionEnd

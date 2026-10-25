@@ -32,6 +32,12 @@ pub struct Config {
     pub signatures: std::collections::HashMap<String, String>,
     /// Looks for a new version when Lookout starts and once a day.
     pub check_for_updates: bool,
+    /// Closing the window leaves Lookout running in the notification area,
+    /// on Windows.
+    pub close_to_tray: bool,
+    /// New mail in the Inbox is shown in Windows notifications while the
+    /// window is in the background.
+    pub notify_new_mail: bool,
 }
 
 impl Default for Config {
@@ -47,6 +53,8 @@ impl Default for Config {
             favourites: Vec::new(),
             signatures: std::collections::HashMap::new(),
             check_for_updates: true,
+            close_to_tray: true,
+            notify_new_mail: true,
         }
     }
 }

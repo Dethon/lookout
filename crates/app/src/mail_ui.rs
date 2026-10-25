@@ -484,6 +484,19 @@ pub fn open_folder(app: &Rc<App>, account: &str, folder: &str) {
     app.engine.send(Request::Watch { account: account.into(), folder: folder.into() });
 }
 
+/// Opens a message in its folder, as a click on its notification does.
+pub fn show_message(app: &Rc<App>, account: &str, folder: &str, id: &str) {
+    let Some(ui) = app.ui() else { return };
+    ui.global::<crate::Shell>().set_page(crate::Page::Mail);
+    let shown = matches!(&*app.mail.view.borrow(), View::Folder { account: a, folder: f } if a == account && f == folder);
+    if !shown {
+        open_folder(app, account, folder);
+    }
+    if let Some(index) = app.mail.list.index_of(account, id) {
+        select(app, index as i32);
+    }
+}
+
 /// Reads the list again, keeping the selection.
 fn reload(app: &Rc<App>) {
     let rows = match &*app.mail.view.borrow() {

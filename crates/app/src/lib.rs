@@ -1,6 +1,7 @@
 //! Lookout's user interface.
 
 mod app;
+mod autostart;
 pub mod body;
 mod calendar_ui;
 mod editor;
@@ -13,7 +14,10 @@ mod models;
 mod notify;
 mod page;
 mod people_ui;
+#[cfg(windows)]
+mod registry;
 mod repaint;
+mod tray;
 mod update_ui;
 mod updater;
 mod viewer;

@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use lookout::{App, MainWindow};
-use slint::ComponentHandle;
 
 fn main() -> Result<(), slint::PlatformError> {
     lookout::tune_allocator();
@@ -11,12 +10,16 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let ui = MainWindow::new()?;
-    let _app = match App::start(&ui) {
+    let app = match App::start(&ui) {
         Ok(app) => app,
         Err(error) => {
             log::error!("starting: {error}");
             return Err(slint::PlatformError::Other(error));
         }
     };
-    ui.run()
+    app.show()?;
+    // Not when the window closes: it may be closed to the tray.
+    let result = slint::run_event_loop_until_quit();
+    app.quit();
+    result
 }

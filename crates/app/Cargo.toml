@@ -29,9 +29,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 [target.'cfg(windows)'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57", default-features = false }
-# Asks whether Windows wants the window painted (see `repaint.rs`), and
-# keeps to one window (see `instance.rs`).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+# Asks whether Windows wants the window painted (see `repaint.rs`), keeps
+# to one window (see `instance.rs`), and starts with Windows (see
+# `autostart.rs`).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+# The notification area icon (see `tray.rs`).
+tray-icon = { version = "0.26", default-features = false }
+# Windows notifications (see `notify.rs`).
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_Com"] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"

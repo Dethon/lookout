@@ -241,6 +241,7 @@ export component MessageList inherits Rectangle {
     callback delete-at(int);
     callback toggle-read(int);
     callback archive-at(int);
+    callback junk-at(int);
     callback move-at(int);
     callback scrolled-to-end();
     background: Theme.surface;
@@ -504,6 +505,10 @@ export component MessageList inherits Rectangle {
                             activated => { root.archive-at(index); }
                         }
                         MenuItem {
+                            title: message.junk ? "Not spam" : "Mark as spam";
+                            activated => { root.junk-at(index); }
+                        }
+                        MenuItem {
                             title: "Move to…";
                             activated => { root.move-at(index); }
                         }
@@ -706,6 +711,8 @@ export component ReadingPane inherits Rectangle {
     in property <[AttachmentRow]> attachments;
     // Messages picked with Ctrl or Shift; past one, they are acted on together.
     in property <int> selection-count;
+    // The list is a Junk Email folder: the selection goes back to the Inbox.
+    in property <bool> junk-folder;
     callback bulk(string);
     callback clear-selection();
     callback reply();
@@ -713,6 +720,8 @@ export component ReadingPane inherits Rectangle {
     callback forward();
     callback delete();
     callback archive();
+    // To Junk Email, or back to the Inbox from there.
+    callback junk();
     callback move();
     callback toggle-flag();
     callback toggle-read();
@@ -779,6 +788,8 @@ export component ReadingPane inherits Rectangle {
             ToolButton { icon: Icons.mail; label: "Mark unread"; clicked => { root.bulk("unread"); } }
             ToolButton { icon: Icons.flag-outline; label: "Flag"; clicked => { root.bulk("flag"); } }
             ToolButton { icon: Icons.archive; label: "Archive"; clicked => { root.bulk("archive"); } }
+            if root.junk-folder: ToolButton { icon: Icons.inbox; label: "Not spam"; clicked => { root.bulk("not-junk"); } }
+            if !root.junk-folder: ToolButton { icon: Icons.junk; label: "Spam"; clicked => { root.bulk("junk"); } }
             ToolButton { icon: Icons.move; label: "Move"; clicked => { root.bulk("move"); } }
             ToolButton { icon: Icons.delete; label: "Delete"; tint: Theme.danger; clicked => { root.bulk("delete"); } }
         }
@@ -870,6 +881,11 @@ export component ReadingPane inherits Rectangle {
                 clicked => { root.archive(); }
             }
             if root.tier > 0: IconButton {
+                icon: root.reader.junk ? Icons.inbox : Icons.junk;
+                tooltip: root.reader.junk ? "Not spam: back to the Inbox" : "Mark as spam";
+                clicked => { root.junk(); }
+            }
+            if root.tier > 0: IconButton {
                 icon: Icons.move;
                 tooltip: "Move to folder";
                 clicked => { root.move(); }
@@ -898,11 +914,13 @@ export component ReadingPane inherits Rectangle {
             }
             if root.tier == 0: MoreButton {
                 entries: [
+                    { id: "junk", icon: root.reader.junk ? Icons.inbox : Icons.junk, label: root.reader.junk ? "Not spam" : "Mark as spam" },
                     { id: "move", icon: Icons.move, label: "Move to folder" },
                     { id: "read", icon: root.reader.unread ? Icons.mail-open : Icons.mail, label: root.reader.unread ? "Mark as read" : "Mark as unread" },
                     { id: "full", icon: Icons.full-view, label: Panes.reading-only ? "Show folders and messages" : "Read in full window" },
                 ];
                 activated(id) => {
+                    if (id == "junk") { root.junk(); }
                     if (id == "move") { root.move(); }
                     if (id == "read") { root.toggle-read(); }
                     if (id == "full") { Panes.reading-only = !Panes.reading-only; }

@@ -183,6 +183,7 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     mail.on_toggle_read_at(with_app!(app, |app, index| toggle_read(&app, index)));
     mail.on_delete_at(with_app!(app, |app, index| remove(&app, index, None)));
     mail.on_archive_at(with_app!(app, |app, index| remove(&app, index, Some("archive".into()))));
+    mail.on_junk_at(with_app!(app, |app, index| junk(&app, index)));
     mail.on_move_at(with_app!(app, |app, index| open_move(&app, index)));
     mail.on_move_to(with_app!(app, |app, folder| move_to(&app, &folder)));
     mail.on_load_more(|| {});
@@ -729,7 +730,15 @@ fn click(app: &Rc<App>, index: i32, control: bool, shift: bool) {
 
 fn update_selection_count(app: &App) {
     if let Some(ui) = app.ui() {
-        ui.global::<Mail>().set_selection_count(app.mail.list.selection_len() as i32);
+        let mail = ui.global::<Mail>();
+        mail.set_selection_count(app.mail.list.selection_len() as i32);
+        let junk_folder = match &*app.mail.view.borrow() {
+            View::Folder { account, folder } => {
+                app.store.well_known_folder(account, "junkemail").ok().flatten().as_ref() == Some(folder)
+            }
+            _ => false,
+        };
+        mail.set_junk_folder(junk_folder);
     }
 }
 
@@ -789,6 +798,7 @@ fn show_header(app: &App, summary: &MessageSummary) {
         flagged: summary.flag == Flag::Flagged,
         unread: !summary.is_read,
         draft: summary.is_draft,
+        junk: crate::models::in_junk(&app.store, summary),
         remote_images: false,
         images_shown: app.mail.remote_shown.get(),
         truncated: false,
@@ -997,6 +1007,17 @@ fn remove(app: &Rc<App>, index: i32, destination: Option<String>) {
     });
 }
 
+/// Moves the messages at `index` to Junk Email, or back to the Inbox when
+/// they are all there already.
+fn junk(app: &Rc<App>, index: i32) {
+    let targets = targets_at(app, index);
+    if targets.is_empty() {
+        return;
+    }
+    let destination = if targets.iter().all(|m| crate::models::in_junk(&app.store, m)) { "inbox" } else { "junkemail" };
+    remove(app, index, Some(destination.into()));
+}
+
 /// Moves messages dragged onto a folder of `account`.
 fn move_messages(app: &Rc<App>, messages: Vec<(String, String)>, account: &str, folder: &str) {
     if messages.iter().any(|(owner, _)| owner != account) {
@@ -1065,12 +1086,18 @@ fn bulk(app: &Rc<App>, action: &str) {
             change(app, selection, |_| Bulk::Flag(flag));
         }
         "move" => show_move_dialog(app, selection),
-        "archive" | "delete" => {
+        "archive" | "delete" | "junk" | "not-junk" => {
             let first = selection.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
             *app.mail.selected.borrow_mut() = None;
             close_reader(app);
             app.mail.select_after.set(first);
-            let destination = (action == "archive").then(|| "archive".to_owned());
+            let destination = match action {
+                "archive" => Some("archive"),
+                "junk" => Some("junkemail"),
+                "not-junk" => Some("inbox"),
+                _ => None,
+            }
+            .map(str::to_owned);
             change(app, selection, |_| match &destination {
                 Some(folder) => Bulk::Move(folder.clone()),
                 None => Bulk::Delete,

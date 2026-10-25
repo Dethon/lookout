@@ -151,6 +151,7 @@ impl MessageList {
         }
         let summary = self.store.summary(row).ok().flatten()?;
         let mut display = to_row(&summary, self.now.get());
+        display.junk = in_junk(&self.store, &summary);
         display.picture = self.photos.for_address(&self.store, &person_of(&summary).address);
         let mut cache = self.cache.borrow_mut();
         if cache.len() >= CACHE_ROWS {
@@ -183,6 +184,11 @@ pub fn group_of(received: i64, now: chrono::DateTime<chrono::Local>) -> String {
     } else {
         date.year().to_string()
     }
+}
+
+/// Whether the message is in its account's Junk Email folder.
+pub fn in_junk(store: &Store, summary: &MessageSummary) -> bool {
+    store.well_known_folder(&summary.account, "junkemail").ok().flatten().is_some_and(|junk| junk == summary.folder_id)
 }
 
 /// Who a row shows: the sender, or in Sent Items and Drafts the first

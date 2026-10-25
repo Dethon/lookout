@@ -43,6 +43,8 @@ export struct MessageRow {
     attachment: bool,
     important: bool,
     draft: bool,
+    // In its account's Junk Email folder.
+    junk: bool,
     // Who the row shows, for their avatar.
     initials: string,
     hue: int,
@@ -109,6 +111,8 @@ export struct Reader {
     flagged: bool,
     unread: bool,
     draft: bool,
+    // In its account's Junk Email folder.
+    junk: bool,
     remote-images: bool,
     images-shown: bool,
     truncated: bool,

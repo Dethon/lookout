@@ -17,8 +17,9 @@ signing in), against the hundreds the new Outlook takes.
   Favourites on top (right-click a folder); a message list grouped by
   Today, Yesterday, weekday, and older, that stays light at any size (only
   row ids are held, rows are read on demand); Ctrl/Shift multi-select with
-  bulk read, flag, archive, move and delete sent in batches; drag messages
-  onto a folder; reading pane with native rich text (bold, italic, links,
+  bulk read, flag, archive, spam, move and delete sent in batches; drag
+  messages onto a folder; mark as spam to Junk Email, and as not spam back
+  to the Inbox; reading pane with native rich text (bold, italic, links,
   colours adjusted to the theme, lists, quotes, headings, pictures side by
   side as the sender laid them out); remote pictures blocked until allowed;
   attachments to open or save; reply, reply all, forward (threaded, with the

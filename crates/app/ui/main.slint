@@ -106,6 +106,8 @@ export global Mail {
     // What dragged messages carry; the moving itself happens in Rust.
     in property <data-transfer> drag-payload;
     in property <int> selection-count;
+    // The list is a Junk Email folder.
+    in property <bool> junk-folder;
     callback bulk(string);
     callback clear-selection();
     callback search(string);
@@ -115,6 +117,8 @@ export global Mail {
     callback toggle-read-at(int);
     callback delete-at(int);
     callback archive-at(int);
+    // To Junk Email, or back to the Inbox from there.
+    callback junk-at(int);
     callback move-at(int);
     callback move-to(string);
     callback load-more();
@@ -862,6 +866,7 @@ export component MainWindow inherits Window {
                                 toggle-read(index) => { Mail.toggle-read-at(index); }
                                 delete-at(index) => { Mail.delete-at(index); }
                                 archive-at(index) => { Mail.archive-at(index); }
+                                junk-at(index) => { Mail.junk-at(index); }
                                 move-at(index) => { Mail.move-at(index); }
                                 scrolled-to-end => { Mail.load-more(); }
                             }
@@ -881,6 +886,7 @@ export component MainWindow inherits Window {
                                 blocks: Mail.blocks;
                                 attachments: Mail.attachments;
                                 selection-count: Mail.selection-count;
+                                junk-folder: Mail.junk-folder;
                                 bulk(action) => { Mail.bulk(action); }
                                 clear-selection => { Mail.clear-selection(); }
                                 reply => { Mail.reply(1); }
@@ -888,6 +894,7 @@ export component MainWindow inherits Window {
                                 forward => { Mail.reply(3); }
                                 delete => { Mail.delete-at(Mail.selected); }
                                 archive => { Mail.archive-at(Mail.selected); }
+                                junk => { Mail.junk-at(Mail.selected); }
                                 move => { Mail.move-at(Mail.selected); }
                                 toggle-flag => { Mail.toggle-flag-at(Mail.selected); }
                                 toggle-read => { Mail.toggle-read-at(Mail.selected); }

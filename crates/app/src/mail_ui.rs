@@ -70,6 +70,9 @@ pub struct MailState {
     /// Messages moved or deleted from search results, which still match
     /// wherever they went: kept out of the results until the search changes.
     left: RefCell<HashSet<RowId>>,
+    /// Picking with the check boxes: the picked show ticked even while only
+    /// one is. A plain click on a row ends it.
+    ticking: Cell<bool>,
     search_timer: Timer,
     search_token: Cell<u64>,
     original: OriginalState,
@@ -120,6 +123,7 @@ impl MailState {
             select_after: Cell::new(None),
             pending_click: Cell::new(None),
             left: RefCell::new(HashSet::new()),
+            ticking: Cell::new(false),
             search_timer: Timer::default(),
             search_token: Cell::new(0),
             original: OriginalState::default(),
@@ -175,8 +179,10 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
         }
     }));
     mail.on_select_all(with_app!(app, |app| select_all(&app)));
+    mail.on_tick(with_app!(app, |app, index| tick(&app, index)));
     mail.on_bulk(with_app!(app, |app, action| bulk(&app, &action)));
     mail.on_clear_selection(with_app!(app, |app| {
+        app.mail.ticking.set(false);
         let selected = app.ui().map(|ui| ui.global::<Mail>().get_selected()).unwrap_or(-1);
         if selected >= 0 {
             app.mail.list.select_one(selected as usize);
@@ -750,6 +756,31 @@ fn click(app: &Rc<App>, index: i32, control: bool, shift: bool) {
     }
 }
 
+/// A press on the check box at `index`: ticks the row, or unticks it. The
+/// first tick on the open message keeps it, now ticked; with one left
+/// ticked, it opens.
+fn tick(app: &Rc<App>, index: i32) {
+    app.mail.pending_click.set(None);
+    if index < 0 {
+        return;
+    }
+    let only_this = app.mail.list.selection_len() == 1 && app.mail.list.is_selected(index as usize);
+    if !(only_this && !app.mail.ticking.get()) {
+        app.mail.list.toggle(index as usize);
+    }
+    match app.mail.list.selection().as_slice() {
+        [] => app.mail.ticking.set(false),
+        [only] => {
+            if let Some(position) = app.mail.list.index_of(&only.account, &only.id) {
+                select(app, position as i32);
+            }
+            app.mail.ticking.set(true);
+        }
+        _ => app.mail.ticking.set(true),
+    }
+    update_selection_count(app);
+}
+
 /// Picks every message in the list, or with all picked, leaves the open
 /// one alone.
 fn select_all(app: &Rc<App>) {
@@ -759,6 +790,7 @@ fn select_all(app: &Rc<App>) {
     }
     if app.mail.list.selection_len() >= len && len > 1 {
         app.mail.list.clear();
+        app.mail.ticking.set(false);
         let selected = app.ui().map(|ui| ui.global::<Mail>().get_selected()).unwrap_or(-1);
         if selected >= 0 {
             app.mail.list.select_one(selected as usize);
@@ -773,6 +805,7 @@ fn update_selection_count(app: &App) {
     if let Some(ui) = app.ui() {
         let mail = ui.global::<Mail>();
         mail.set_selection_count(app.mail.list.selection_len() as i32);
+        mail.set_ticking(app.mail.ticking.get() && app.mail.list.selection_len() > 0);
         let junk_folder = match &*app.mail.view.borrow() {
             View::Folder { account, folder } => {
                 app.store.well_known_folder(account, "junkemail").ok().flatten().as_ref() == Some(folder)
@@ -797,6 +830,7 @@ fn targets_at(app: &App, index: i32) -> Vec<MessageSummary> {
 fn select(app: &Rc<App>, index: i32) {
     let Some(ui) = app.ui() else { return };
     let Some(summary) = (index >= 0).then(|| app.mail.list.summary(index as usize)).flatten() else { return };
+    app.mail.ticking.set(false);
     app.mail.list.select_one(index as usize);
     update_selection_count(app);
     let mail = ui.global::<Mail>();
@@ -1095,6 +1129,7 @@ fn leave(app: &Rc<App>, messages: &[MessageSummary]) {
     let picked = messages.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).any(|i| app.mail.list.is_selected(i));
     if picked {
         app.mail.list.clear();
+        app.mail.ticking.set(false);
     }
     let searching = matches!(*app.mail.view.borrow(), View::Search { .. });
     if searching {

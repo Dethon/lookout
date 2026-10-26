@@ -111,6 +111,8 @@ export global Mail {
     callback bulk(string);
     callback clear-selection();
     callback select-all();
+    callback tick(int);
+    in property <bool> ticking;
     callback search(string);
     callback search-server();
     callback toggle-unread-only();
@@ -851,6 +853,11 @@ export component MainWindow inherits Window {
                                 search-text <=> Mail.search-text;
                                 avatars: Shell.list-avatars;
                                 selection-count: Mail.selection-count;
+                                ticking: Mail.ticking;
+                                tick(index) => {
+                                    Mail.tick(index);
+                                    keys.focus();
+                                }
                                 focus-request: Mail.focus-search-request;
                                 empty-text: Mail.searching ? "No messages found" : "Nothing here";
                                 select(index, control, shift) => {

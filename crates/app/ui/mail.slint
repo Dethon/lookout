@@ -245,6 +245,11 @@ export component MessageList inherits Rectangle {
     callback move-at(int);
     // Picks every message, or with all picked, none again.
     callback select-all();
+    // A press on a row's check box.
+    callback tick(int);
+    // Messages are being picked with the check boxes: they show ticked
+    // even while only one is.
+    in property <bool> ticking;
     callback scrolled-to-end();
     background: Theme.surface;
 
@@ -371,18 +376,21 @@ export component MessageList inherits Rectangle {
                     touch := TouchArea {
                         mouse-cursor: pointer;
                         // The check box is drawn inside, so the press is told
-                        // apart here: in its column, a press picks the row as
-                        // Ctrl does.
-                        property <bool> on-check: checking && self.mouse-x >= 6px && self.mouse-x < 54px;
+                        // apart here: anywhere in its column.
+                        property <bool> on-check: checking && self.has-hover && self.mouse-x >= 6px && self.mouse-x < 54px;
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                                root.select(index, event.modifiers.control || on-check, event.modifiers.shift);
+                                if (on-check && !event.modifiers.shift) {
+                                    root.tick(index);
+                                } else {
+                                    root.select(index, event.modifiers.control, event.modifiers.shift);
+                                }
                             }
                         }
                         clicked => { root.row-clicked(index); }
                         // Over a row, or while several are picked, a check
                         // box takes the avatar's place to pick more.
-                        property <bool> checking: root.avatars && (touch.has-hover || root.selection-count > 1);
+                        property <bool> checking: root.avatars && (touch.has-hover || root.selection-count > 1 || root.ticking);
                         if root.avatars && !checking: Avatar {
                             x: 14px;
                             y: 10px;
@@ -392,7 +400,7 @@ export component MessageList inherits Rectangle {
                             picture: message.picture;
                         }
                         if checking: Rectangle {
-                            property <bool> checked: message.selected && root.selection-count > 1;
+                            property <bool> checked: message.selected && (root.selection-count > 1 || root.ticking);
                             x: 14px;
                             y: 10px;
                             width: 32px;

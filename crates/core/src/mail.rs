@@ -177,6 +177,41 @@ pub async fn delete(graph: &Graph, store: &Mutex<Store>, id: &str, cached: impl 
     }
 }
 
+/// Makes a folder named `name`, at the top or under `parent`. The next
+/// folder sync lists it.
+pub async fn create_folder(graph: &Graph, parent: Option<&str>, name: &str) -> Result<()> {
+    let path = match parent {
+        Some(parent) => format!("/me/mailFolders/{}/childFolders", encode(parent)),
+        None => "/me/mailFolders".to_owned(),
+    };
+    graph.post_empty(&path, Some(&json!({ "displayName": name.trim() }))).await
+}
+
+/// Moves a folder, with what it holds, to Deleted Items, or deletes it for
+/// good if it is in there already.
+pub async fn delete_folder(graph: &Graph, store: &Mutex<Store>, id: &str) -> Result<()> {
+    let in_deleted_items = {
+        let store = lock(store);
+        let deleted_items = store.well_known_folder(graph.account_id(), "deleteditems")?;
+        let folders = store.folders(graph.account_id())?;
+        let mut parent = folders.iter().find(|folder| folder.id == id).and_then(|folder| folder.parent_id.clone());
+        let mut inside = false;
+        while let Some(current) = parent {
+            if Some(&current) == deleted_items.as_ref() {
+                inside = true;
+                break;
+            }
+            parent = folders.iter().find(|folder| folder.id == current).and_then(|folder| folder.parent_id.clone());
+        }
+        inside
+    };
+    if in_deleted_items {
+        graph.delete(&format!("/me/mailFolders/{}", encode(id))).await
+    } else {
+        graph.post_empty(&format!("/me/mailFolders/{}/move", encode(id)), Some(&json!({ "destinationId": "deleteditems" }))).await
+    }
+}
+
 /// A change made to several messages at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bulk {
@@ -186,6 +221,8 @@ pub enum Bulk {
     Move(String),
     /// To Deleted Items, or for good for those already there.
     Delete,
+    /// To the Focused part of the Inbox, or with `false` to Other.
+    Focus(bool),
 }
 
 // Graph takes at most this many requests in one batch.
@@ -234,6 +271,10 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
                     store.set_flag(account, id, *flag)?;
                     json!({ "method": "PATCH", "url": url, "body": { "flag": { "flagStatus": flag.to_graph() } } })
                 }
+                Bulk::Focus(focused) => {
+                    store.set_focused(account, id, *focused)?;
+                    json!({ "method": "PATCH", "url": url, "body": { "inferenceClassification": classification(*focused) } })
+                }
                 Bulk::Delete if Some(&summary.folder_id) == deleted_items.as_ref() => {
                     recount(&store, summary, None)?;
                     forget.push(id.clone());
@@ -252,6 +293,53 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
     }
     cached();
     run_batch(graph, "/$batch", &requests).await
+}
+
+fn classification(focused: bool) -> &'static str {
+    if focused { "focused" } else { "other" }
+}
+
+/// Puts mail from `senders` in Focused, or with `focused` false in Other,
+/// from now on: Outlook's overrides, kept on the server. Writing them needs
+/// the permission blocking senders asks for: `email` is the account's
+/// address, and `asking` is called if the browser opens for it. The
+/// messages already in the Inbox are moved with [`bulk`].
+pub async fn always_focus(graph: &Graph, senders: &[String], focused: bool, email: &str, asking: impl FnOnce()) -> Result<()> {
+    if senders.is_empty() {
+        return Ok(());
+    }
+    graph.session().allow_rules(email, asking).await?;
+    let overrides: Vec<Override> = graph.all("/me/inferenceClassification/overrides").await?;
+    let requests: Vec<_> = senders
+        .iter()
+        .map(|sender| {
+            // A sender has one override: changed if there is one already.
+            let existing = overrides.iter().find(|o| {
+                o.sender_email_address.address.as_deref().is_some_and(|address| address.eq_ignore_ascii_case(sender))
+            });
+            match existing {
+                Some(existing) => json!({
+                    "method": "PATCH",
+                    "url": format!("/me/inferenceClassification/overrides/{}", encode(&existing.id)),
+                    "body": { "classifyAs": classification(focused) },
+                }),
+                None => json!({
+                    "method": "POST",
+                    "url": "/me/inferenceClassification/overrides",
+                    "body": { "classifyAs": classification(focused), "senderEmailAddress": { "address": sender } },
+                }),
+            }
+        })
+        .collect();
+    run_batch(graph, "/$batch", &requests).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Override {
+    id: String,
+    #[serde(default)]
+    sender_email_address: wire::EmailAddress,
 }
 
 /// Sends `requests` to the batch endpoint at `path`, twenty at a time.

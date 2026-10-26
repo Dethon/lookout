@@ -1,7 +1,7 @@
 import { ListView, CheckBox, Switch, LineEdit, Spinner, Palette, TextEdit } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
 import { Panes } from "panes.slint";
-import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter } from "widgets.slint";
+import { Icon, IconButton, ToolButton, Divider, VDivider, Overlay, Tip, Splitter, Field } from "widgets.slint";
 import {
     Page, AccountRow, FolderRow, MessageRow, BodyBlock, AttachmentRow, Reader, Compose, FormatResult, Suggestion,
     DayColumn, EventBox, AllDayBox, MonthEvent, MonthCell, EventDetail, CalendarRow, EventEditor, MiniDay,
@@ -30,6 +30,9 @@ export global Shell {
     in-out property <bool> load-images;
     in property <bool> list-avatars: true;
     callback list-avatars-changed(bool);
+    // The Inbox is split into Focused and Other.
+    in property <bool> focused-inbox: true;
+    callback focused-inbox-changed(bool);
     in property <string> version;
     // Windows: the tray, starting with it, and its notifications.
     in property <bool> desktop;
@@ -92,6 +95,27 @@ export global Mail {
     in property <int> suggestion-field: -1;
     in-out property <bool> move-open;
     in property <[FolderRow]> move-targets;
+    // The Inbox is split into Focused and Other, and which one shows.
+    in property <bool> split;
+    in property <bool> focused-tab: true;
+    in property <int> focused-unread;
+    in property <int> other-unread;
+    callback show-focused(bool);
+    // The messages at a row to Focused or Other; with the last, their
+    // senders' mail from now on.
+    callback focus-at(int, bool, bool);
+    // A dialog asking a new folder's name, or whether to delete one.
+    in-out property <bool> folder-dialog-open;
+    in property <bool> folder-dialog-delete;
+    // The folder to delete, or where the new one goes.
+    in property <string> folder-dialog-name;
+    // Deleting from Deleted Items, for good.
+    in property <bool> folder-dialog-for-good;
+    // In an account, under a folder or at the top when empty.
+    callback new-folder(string, string);
+    callback delete-folder(string, string);
+    // The new folder's name, or nothing when deleting.
+    callback folder-dialog-accepted(string);
     // Bumped to put the cursor in the search box or the composer's To field.
     in-out property <int> focus-search-request;
     in-out property <int> focus-compose-request;
@@ -466,6 +490,19 @@ component SettingsDialog inherits Overlay {
                     toggled => { Shell.list-avatars-changed(self.checked); }
                 }
             }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Split the Inbox into Focused and Other";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    checked: Shell.focused-inbox;
+                    toggled => { Shell.focused-inbox-changed(self.checked); }
+                }
+            }
             VerticalLayout {
                 spacing: 4px;
                 Text {
@@ -588,6 +625,69 @@ component SettingsDialog inherits Overlay {
     }
 }
 
+component FolderDialog inherits Overlay {
+    card-width: 400px;
+    dismissed => { Mail.folder-dialog-open = false; }
+    function create-or-delete() {
+        if (Mail.folder-dialog-delete || name.text != "") {
+            Mail.folder-dialog-accepted(name.text);
+        }
+    }
+    // Escape while typing the name, which the window's keys don't see.
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                Mail.folder-dialog-open = false;
+                return accept;
+            }
+            return reject;
+        }
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        Text {
+            text: Mail.folder-dialog-delete ? "Delete " + Mail.folder-dialog-name + "?" : "New folder";
+            font-size: 18px;
+            font-weight: 600;
+            color: Theme.text;
+            overflow: elide;
+        }
+        Text {
+            text: !Mail.folder-dialog-delete ? "In " + Mail.folder-dialog-name
+                : Mail.folder-dialog-for-good ? "The folder, its subfolders and their messages are deleted for good."
+                : "The folder goes to Deleted Items with its subfolders and messages, and can be moved back from there.";
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        name := Field {
+            visible: !Mail.folder-dialog-delete;
+            height: Mail.folder-dialog-delete ? 0px : 36px;
+            placeholder: "Name";
+            accepted => { root.create-or-delete(); }
+            init => {
+                if (!Mail.folder-dialog-delete) {
+                    self.focus-input();
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            ToolButton {
+                label: "Cancel";
+                clicked => { Mail.folder-dialog-open = false; }
+            }
+            ToolButton {
+                label: Mail.folder-dialog-delete ? "Delete" : "Create";
+                primary: true;
+                enabled: Mail.folder-dialog-delete || name.text != "";
+                clicked => { root.create-or-delete(); }
+            }
+        }
+    }
+    }
+}
+
 component MoveDialog inherits Overlay {
     card-width: 360px;
     card-height: 480px;
@@ -661,7 +761,7 @@ export component MainWindow inherits Window {
     // something should be drawn where it sits.
     property <bool> original-shown: Mail.original && Mail.webview && Shell.page == Page.mail && Shell.accounts.length > 0
         && Mail.reader.open && !Mail.reader.loading && Mail.selection-count <= 1 && !Mail.compose.open
-        && !Shell.settings-open && !Mail.move-open;
+        && !Shell.settings-open && !Mail.move-open && !Mail.folder-dialog-open;
     changed original-shown => { Mail.original-shown(self.original-shown); }
 
     public function focus-keys() {
@@ -710,6 +810,7 @@ export component MainWindow inherits Window {
             if (event.text == Key.Escape) {
                 if (Shell.settings-open) { Shell.settings-open = false; return accept; }
                 if (Mail.move-open) { Mail.move-open = false; return accept; }
+                if (Mail.folder-dialog-open) { Mail.folder-dialog-open = false; return accept; }
                 if (Cal.detail.open) { Cal.close-event(); return accept; }
                 if (Panes.folders-flyout) { Panes.folders-flyout = false; return accept; }
                 if (Panes.calendars-flyout) { Panes.calendars-flyout = false; return accept; }
@@ -817,6 +918,8 @@ export component MainWindow inherits Window {
                                 dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
                                 toggle-expanded(account, folder) => { Mail.toggle-expanded(account, folder); }
                                 toggle-favourite(account, folder) => { Mail.toggle-favourite(account, folder); }
+                                new-folder(account, parent) => { Mail.new-folder(account, parent); }
+                                delete-folder(account, folder) => { Mail.delete-folder(account, folder); }
                                 collapse => {
                                     Panes.folders-collapsed = true;
                                     Panes.changed();
@@ -849,6 +952,15 @@ export component MainWindow inherits Window {
                                 selected: Mail.selected;
                                 searching: Mail.searching;
                                 unread-only: Mail.unread-only;
+                                split: Mail.split;
+                                focused-tab: Mail.focused-tab;
+                                focused-unread: Mail.focused-unread;
+                                other-unread: Mail.other-unread;
+                                show-focused(focused) => {
+                                    Mail.show-focused(focused);
+                                    keys.focus();
+                                }
+                                focus-at(index, focused, always) => { Mail.focus-at(index, focused, always); }
                                 busy: Mail.busy;
                                 search-text <=> Mail.search-text;
                                 avatars: Shell.list-avatars;
@@ -899,6 +1011,9 @@ export component MainWindow inherits Window {
                                 attachments: Mail.attachments;
                                 selection-count: Mail.selection-count;
                                 junk-folder: Mail.junk-folder;
+                                split: Mail.split;
+                                focused-tab: Mail.focused-tab;
+                                move-focus(focused) => { Mail.focus-at(Mail.selected, focused, false); }
                                 bulk(action) => { Mail.bulk(action); }
                                 clear-selection => { Mail.clear-selection(); }
                                 reply => { Mail.reply(1); }
@@ -990,6 +1105,8 @@ export component MainWindow inherits Window {
                                 dropped-on(account, folder) => { Mail.dropped-on(account, folder); }
                                 toggle-expanded(account, folder) => { Mail.toggle-expanded(account, folder); }
                                 toggle-favourite(account, folder) => { Mail.toggle-favourite(account, folder); }
+                                new-folder(account, parent) => { Mail.new-folder(account, parent); }
+                                delete-folder(account, folder) => { Mail.delete-folder(account, folder); }
                                 collapse => { Panes.folders-flyout = false; }
                             }
                         }
@@ -1172,6 +1289,7 @@ export component MainWindow inherits Window {
         cancel => { People.cancel-editor(); }
     }
     if Mail.move-open: MoveDialog { }
+    if Mail.folder-dialog-open: FolderDialog { }
     if Shell.settings-open: SettingsDialog { }
 
     if Tip.text != "": Rectangle {

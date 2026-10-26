@@ -33,6 +33,11 @@ signing in), against the hundreds the new Outlook takes.
   you and people you wrote to, those you write to most first; arrow keys
   and Enter or Tab pick one); drafts; instant offline search (SQLite FTS5)
   and server search for older mail; unread-only filter; new mail notices.
+  The Inbox is split into Focused and Other, as Outlook sorts it: messages
+  move between them once, or for good for their sender (Outlook keeps that
+  on the server); only mail in Focused is notified, and Settings can turn
+  the split off. Folders are made and deleted with a right click on a
+  folder or the account; deleted ones go to Deleted Items.
 - **Layout**: the folder pane and the message list are resized by dragging
   their edges, and kept that way; the folder pane can be put away into a
   strip of folder icons with unread badges (Ctrl+B), and gives way to it by

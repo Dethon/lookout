@@ -167,6 +167,7 @@ pub fn record_from(account: &str, message: &wire::Message, folder: &str) -> Mess
             flag: message.flag.as_ref().map(|flag| Flag::from_graph(&flag.flag_status)).unwrap_or_default(),
             high_importance: message.importance.as_deref() == Some("high"),
             has_attachments: message.has_attachments.unwrap_or(false),
+            focused: message.inference_classification.as_deref() != Some("other"),
         },
         cc: addresses(&message.cc_recipients),
         reply_to: addresses(&message.reply_to),
@@ -218,6 +219,10 @@ fn apply_messages(
                 }
                 if let Some(folder) = &message.parent_folder_id {
                     store.set_folder(account, &message.id, folder)?;
+                    result.changed = true;
+                }
+                if let Some(class) = &message.inference_classification {
+                    store.set_focused(account, &message.id, class != "other")?;
                     result.changed = true;
                 }
             }
@@ -510,6 +515,23 @@ mod tests {
         let removed: wire::Message = serde_json::from_str(r#"{"id":"m","@removed":{"reason":"deleted"}}"#).unwrap();
         apply_messages(&store, "a", "inbox", vec![removed], false, &mut result).unwrap();
         assert!(store.lock().unwrap().row_of("a", "m").unwrap().is_none());
+    }
+
+    #[test]
+    fn messages_move_between_focused_and_other() {
+        let store = Mutex::new(Store::open_in_memory().unwrap());
+        let message: wire::Message = serde_json::from_str(
+            r#"{"id":"m","subject":"s","receivedDateTime":"2026-10-01T00:00:00Z","parentFolderId":"inbox",
+                "inferenceClassification":"other"}"#,
+        )
+        .unwrap();
+        let mut result = FolderSync::default();
+        apply_messages(&store, "a", "inbox", vec![message], false, &mut result).unwrap();
+        assert!(!store.lock().unwrap().message("a", "m").unwrap().unwrap().summary.focused);
+        // Moved to Focused elsewhere: the delta carries only that.
+        let changed: wire::Message = serde_json::from_str(r#"{"id":"m","inferenceClassification":"focused"}"#).unwrap();
+        apply_messages(&store, "a", "inbox", vec![changed], false, &mut result).unwrap();
+        assert!(store.lock().unwrap().message("a", "m").unwrap().unwrap().summary.focused);
     }
 
     #[test]

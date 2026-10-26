@@ -56,6 +56,13 @@ pub enum Request {
     /// Messages of an account marked as spam or not: moved, reported to
     /// Microsoft, and their senders blocked or unblocked.
     Report { account: String, ids: Vec<String>, spam: Spam },
+    /// Mail from the senders of these messages goes to Focused, or to
+    /// Other, from now on; theirs already in the Inbox goes there too.
+    AlwaysFocus { account: String, ids: Vec<String>, focused: bool },
+    /// A new folder, at the top or under `parent`.
+    CreateFolder { account: String, parent: Option<String>, name: String },
+    /// To Deleted Items, or for good from there.
+    DeleteFolder { account: String, id: String },
     StartReply { account: String, id: String, kind: ReplyKind, token: u64 },
     Send { account: String, draft: Box<Draft>, reply: Option<Box<wire::Message>>, existing: Option<String> },
     SaveDraft { account: String, draft: Draft },
@@ -348,6 +355,14 @@ impl Inner {
         }
     }
 
+    /// Lists the folders again, after one was made or deleted.
+    async fn refresh_folders(&self, graph: &Graph) {
+        match sync::sync_folders(graph, &self.store).await {
+            Ok(_) => self.emit(Event::Folders),
+            Err(error) => self.report("Updating folders", &error),
+        }
+    }
+
     async fn sync_folder(&self, graph: &Graph, folder: &str, notify_new: bool) {
         let lock = self.sync_lock(graph.account_id());
         let _guard = lock.lock().await;
@@ -451,6 +466,9 @@ impl Inner {
                 | Request::Delete { .. }
                 | Request::Bulk { .. }
                 | Request::Report { .. }
+                | Request::AlwaysFocus { .. }
+                | Request::CreateFolder { .. }
+                | Request::DeleteFolder { .. }
                 | Request::Send { .. }
                 | Request::SaveDraft { .. }
                 | Request::SaveEvent { .. }
@@ -577,6 +595,63 @@ impl Inner {
                     }
                     Ok(()) => {}
                     Err(error) => self.report(if blocked { "Blocking the sender" } else { "Unblocking the sender" }, &error),
+                }
+            }
+            Request::AlwaysFocus { account, ids, focused } => {
+                let Some(graph) = self.graph(&account) else { return };
+                let (mut senders, email, inbox) = {
+                    let store = self.store.lock().unwrap();
+                    let senders: Vec<String> = ids
+                        .iter()
+                        .filter_map(|id| store.message(&account, id).ok().flatten())
+                        .map(|detail| detail.summary.from.address)
+                        .collect();
+                    let email = store.accounts().unwrap_or_default().into_iter().find(|a| a.id == account).map(|a| a.email);
+                    (senders, email.unwrap_or_default(), store.well_known_folder(&account, "inbox").ok().flatten())
+                };
+                senders.retain(|sender| !sender.is_empty());
+                senders.sort_by_key(|sender| sender.to_lowercase());
+                senders.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                // Theirs in the Inbox move at once, whether the overrides
+                // are allowed or not.
+                let mut moving = inbox
+                    .and_then(|inbox| self.store.lock().unwrap().ids_from(&account, &inbox, &senders, focused).ok())
+                    .unwrap_or_default();
+                moving.extend(ids.iter().filter(|id| !moving.contains(id)).cloned().collect::<Vec<_>>());
+                let refresh = || {
+                    if let Ok(Some(inbox)) = self.store.lock().unwrap().well_known_folder(&account, "inbox") {
+                        self.emit(Event::Messages { account: account.clone(), folder: inbox });
+                    }
+                    self.emit(Event::Folders);
+                };
+                if let Err(error) = mail::bulk(&graph, &self.store, &moving, &mail::Bulk::Focus(focused), refresh).await {
+                    self.report("Moving the messages", &error);
+                }
+                let _rules = self.rules_lock.lock().await;
+                let asking = || self.emit(Event::Status("Allow Lookout to sort senders in the browser".into()));
+                match mail::always_focus(&graph, &senders, focused, &email, asking).await {
+                    Ok(()) => self.emit(Event::Status(format!(
+                        "Their mail will go to {} from now on",
+                        if focused { "Focused" } else { "Other" }
+                    ))),
+                    Err(error) => self.report("Sorting the sender", &error),
+                }
+            }
+            Request::CreateFolder { account, parent, name } => {
+                let Some(graph) = self.graph(&account) else { return };
+                match mail::create_folder(&graph, parent.as_deref(), &name).await {
+                    Ok(()) => {
+                        self.refresh_folders(&graph).await;
+                        self.emit(Event::Status(format!("Folder {name} made")));
+                    }
+                    Err(error) => self.report("Making the folder", &error),
+                }
+            }
+            Request::DeleteFolder { account, id } => {
+                let Some(graph) = self.graph(&account) else { return };
+                match mail::delete_folder(&graph, &self.store, &id).await {
+                    Ok(()) => self.refresh_folders(&graph).await,
+                    Err(error) => self.report("Deleting the folder", &error),
                 }
             }
             Request::StartReply { account, id, kind, token } => {

@@ -147,6 +147,7 @@ impl App {
         global.set_client_id(config.client_id.clone().unwrap_or_default().into());
         global.set_load_images(config.load_remote_images);
         global.set_list_avatars(config.list_avatars);
+        global.set_focused_inbox(config.focused_inbox);
         global.set_version(env!("CARGO_PKG_VERSION").into());
         global.set_status("Starting…".into());
         global.set_desktop(notify::AVAILABLE);
@@ -229,6 +230,17 @@ impl App {
                     ui.global::<AppGlobal>().set_list_avatars(on);
                 }
                 app.persist();
+            }
+        });
+        let app = Rc::downgrade(self);
+        global.on_focused_inbox_changed(move |on| {
+            if let Some(app) = app.upgrade() {
+                app.config.borrow_mut().focused_inbox = on;
+                if let Some(ui) = app.ui() {
+                    ui.global::<AppGlobal>().set_focused_inbox(on);
+                }
+                app.persist();
+                mail_ui::focused_inbox_changed(&app);
             }
         });
         let app = Rc::downgrade(self);
@@ -413,7 +425,14 @@ impl App {
                 global.set_status(text.as_str().into());
                 self.toast(&text);
             }
-            Event::NewMail(messages) => {
+            Event::NewMail(mut messages) => {
+                // Other is for mail that can wait.
+                if self.config.borrow().focused_inbox {
+                    messages.retain(|message| message.focused);
+                }
+                if messages.is_empty() {
+                    return;
+                }
                 let text = match messages.as_slice() {
                     [one] => format!("{}: {}", one.from.display(), one.subject),
                     many => format!("{} new messages", many.len()),

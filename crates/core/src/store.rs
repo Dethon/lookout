@@ -15,7 +15,7 @@ use crate::model::{
     MessageSummary, Phone, Response,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 // SQLite's page cache per connection, in KiB (negative means KiB).
 const CACHE_KIB: i64 = -2048;
 // Bodies kept for messages opened earlier; the least recently opened go first.
@@ -143,7 +143,7 @@ CREATE TABLE contacts (
 // What each version adds to the one before. Caches made earlier run those
 // they lack; new ones run `SCHEMA` (version 1), then all of them. Index 0
 // takes version 1 to 2.
-const MIGRATIONS: &[&str] = &[PHOTOS];
+const MIGRATIONS: &[&str] = &[PHOTOS, FOCUSED];
 
 const PHOTOS: &str = r#"
 CREATE TABLE IF NOT EXISTS photos (
@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 "#;
 
+// Saved delta links ask for the fields of their time: the Inbox starts
+// over, so that its messages come with their place in Focused or Other.
+// Elsewhere it isn't shown.
+const FOCUSED: &str = r#"
+ALTER TABLE messages ADD COLUMN focused INTEGER NOT NULL DEFAULT 1;
+DELETE FROM sync_state WHERE key IN (SELECT 'messages:' || id FROM folders WHERE well_known = 'inbox');
+"#;
+
 pub struct Store {
     db: Connection,
 }
@@ -164,7 +172,7 @@ pub struct Store {
 pub type RowId = i64;
 
 const SUMMARY_COLUMNS: &str = "account, id, folder_id, conversation_id, subject, from_name, \
-    from_address, to_json, preview, received, is_read, is_draft, flag, high_importance, has_attachments";
+    from_address, to_json, preview, received, is_read, is_draft, flag, high_importance, has_attachments, focused";
 
 fn summary_from(row: &Row) -> rusqlite::Result<MessageSummary> {
     Ok(MessageSummary {
@@ -182,6 +190,7 @@ fn summary_from(row: &Row) -> rusqlite::Result<MessageSummary> {
         flag: Flag::from_i64(row.get(12)?),
         high_importance: row.get(13)?,
         has_attachments: row.get(14)?,
+        focused: row.get(15)?,
     })
 }
 
@@ -388,8 +397,8 @@ impl Store {
             let mut upsert = tx.prepare_cached(
                 "INSERT INTO messages (account, id, folder_id, conversation_id, subject, from_name,
                     from_address, to_json, cc_json, reply_to_json, preview, received, sent, is_read,
-                    is_draft, flag, high_importance, has_attachments, categories)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                    is_draft, flag, high_importance, has_attachments, categories, focused)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                  ON CONFLICT (account, id) DO UPDATE SET
                     folder_id = excluded.folder_id, conversation_id = excluded.conversation_id,
                     subject = excluded.subject, from_name = excluded.from_name,
@@ -398,7 +407,8 @@ impl Store {
                     preview = excluded.preview, received = excluded.received, sent = excluded.sent,
                     is_read = excluded.is_read, is_draft = excluded.is_draft, flag = excluded.flag,
                     high_importance = excluded.high_importance,
-                    has_attachments = excluded.has_attachments, categories = excluded.categories",
+                    has_attachments = excluded.has_attachments, categories = excluded.categories,
+                    focused = excluded.focused",
             )?;
             for record in records {
                 let summary = &record.summary;
@@ -422,6 +432,7 @@ impl Store {
                     summary.high_importance,
                     summary.has_attachments,
                     record.categories.join("\u{1f}"),
+                    summary.focused,
                 ])?;
             }
         }
@@ -447,14 +458,26 @@ impl Store {
         Ok(())
     }
 
-    /// The rows of a folder, newest first; only unread ones if asked.
-    pub fn folder_rows(&self, account: &str, folder: &str, unread_only: bool) -> Result<Vec<RowId>> {
+    /// The rows of a folder, newest first; only unread ones if asked, and
+    /// with `focused`, only those in Focused or in Other.
+    pub fn folder_rows(&self, account: &str, folder: &str, unread_only: bool, focused: Option<bool>) -> Result<Vec<RowId>> {
         let mut statement = self.db.prepare_cached(
             "SELECT rowid FROM messages WHERE account = ?1 AND folder_id = ?2 AND (NOT ?3 OR NOT is_read)
+                AND (?4 IS NULL OR focused = ?4)
              ORDER BY received DESC",
         )?;
-        let rows = statement.query_map(params![account, folder, unread_only], |row| row.get(0))?;
+        let rows = statement.query_map(params![account, folder, unread_only, focused], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A folder's unread messages in Focused and in Other.
+    pub fn unread_by_focus(&self, account: &str, folder: &str) -> Result<(u32, u32)> {
+        Ok(self.db.query_row(
+            "SELECT COALESCE(SUM(focused), 0), COALESCE(SUM(NOT focused), 0) FROM messages
+             WHERE account = ?1 AND folder_id = ?2 AND NOT is_read",
+            [account, folder],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
     }
 
     /// Rows matching a search, newest first, in one account or all of them.
@@ -499,17 +522,17 @@ impl Store {
         ))?;
         Ok(statement
             .query_row([account, id], |row| {
-                let categories: String = row.get(18)?;
+                let categories: String = row.get(19)?;
                 Ok(MessageDetail {
                     summary: summary_from(row)?,
-                    cc: json_or_default(&row.get::<_, String>(15)?),
+                    cc: json_or_default(&row.get::<_, String>(16)?),
                     bcc: Vec::new(),
-                    reply_to: json_or_default(&row.get::<_, String>(16)?),
-                    sent: row.get(17)?,
+                    reply_to: json_or_default(&row.get::<_, String>(17)?),
+                    sent: row.get(18)?,
                     categories: categories.split('\u{1f}').filter(|c| !c.is_empty()).map(str::to_owned).collect(),
-                    body_html: row.get(19)?,
+                    body_html: row.get(20)?,
                     attachments: row
-                        .get::<_, Option<String>>(20)?
+                        .get::<_, Option<String>>(21)?
                         .map(|json| json_or_default(&json))
                         .unwrap_or_default(),
                 })
@@ -584,6 +607,26 @@ impl Store {
         self.db.execute(
             "UPDATE messages SET flag = ?3 WHERE account = ?1 AND id = ?2",
             params![account, id, flag.to_i64()],
+        )?;
+        Ok(())
+    }
+
+    /// The messages of a folder from any of `senders` that aren't where
+    /// `focused` puts them.
+    pub fn ids_from(&self, account: &str, folder: &str, senders: &[String], focused: bool) -> Result<Vec<String>> {
+        let senders: Vec<String> = senders.iter().map(|sender| sender.to_lowercase()).collect();
+        let mut statement = self.db.prepare_cached(
+            "SELECT id FROM messages WHERE account = ?1 AND folder_id = ?2 AND focused != ?3
+                AND lower(from_address) IN (SELECT value FROM json_each(?4))",
+        )?;
+        let rows = statement.query_map(params![account, folder, focused, to_json(&senders)], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_focused(&self, account: &str, id: &str, focused: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE messages SET focused = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, focused],
         )?;
         Ok(())
     }
@@ -1070,6 +1113,7 @@ mod tests {
                 flag: Flag::None,
                 high_importance: false,
                 has_attachments: false,
+                focused: true,
             },
             cc: vec![],
             reply_to: vec![],
@@ -1088,9 +1132,30 @@ mod tests {
         store
             .put_messages(&[record("1", "inbox", "older", 10), record("2", "inbox", "newer", 20), record("3", "other", "x", 30)])
             .unwrap();
-        let rows = store.folder_rows("a", "inbox", false).unwrap();
+        let rows = store.folder_rows("a", "inbox", false, None).unwrap();
         let subjects: Vec<_> = rows.iter().map(|row| store.summary(*row).unwrap().unwrap().subject).collect();
         assert_eq!(subjects, ["newer", "older"]);
+    }
+
+    #[test]
+    fn the_inbox_splits_into_focused_and_other() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut other = record("2", "inbox", "newsletter", 20);
+        other.summary.focused = false;
+        store.put_messages(&[record("1", "inbox", "from a friend", 10), other]).unwrap();
+        let subjects = |focused| -> Vec<String> {
+            let rows = store.folder_rows("a", "inbox", false, focused).unwrap();
+            rows.iter().map(|row| store.summary(*row).unwrap().unwrap().subject).collect()
+        };
+        assert_eq!(subjects(Some(true)), ["from a friend"]);
+        assert_eq!(subjects(Some(false)), ["newsletter"]);
+        assert_eq!(subjects(None).len(), 2);
+        assert_eq!(store.unread_by_focus("a", "inbox").unwrap(), (1, 1));
+        assert_eq!(store.ids_from("a", "inbox", &["ANA@example.com".into()], true).unwrap(), ["2"]);
+        assert!(store.ids_from("a", "inbox", &["bo@example.com".into()], true).unwrap().is_empty());
+        store.set_focused("a", "2", true).unwrap();
+        assert_eq!(store.unread_by_focus("a", "inbox").unwrap(), (2, 0));
+        assert!(store.message("a", "2").unwrap().unwrap().summary.focused);
     }
 
     #[test]
@@ -1139,9 +1204,19 @@ mod tests {
         {
             let db = Connection::open(&path).unwrap();
             db.execute_batch(SCHEMA).unwrap();
+            db.execute("INSERT INTO folders (account, id, name, well_known) VALUES ('a', 'in', 'Inbox', 'inbox')", []).unwrap();
+            db.execute("INSERT INTO sync_state (account, key, link) VALUES ('a', 'messages:in', 'old')", []).unwrap();
+            db.execute("INSERT INTO sync_state (account, key, link) VALUES ('a', 'messages:sent', 'old')", []).unwrap();
+            db.execute("INSERT INTO sync_state (account, key, link) VALUES ('a', 'wellknown:inbox', 'in')", []).unwrap();
             db.pragma_update(None, "user_version", 1).unwrap();
         }
         let mut store = Store::open(&path).unwrap();
+        // The Inbox starts over, to bring each message's place in it.
+        assert_eq!(store.sync_link("a", "messages:in").unwrap(), None);
+        assert_eq!(store.sync_link("a", "messages:sent").unwrap().as_deref(), Some("old"));
+        assert_eq!(store.sync_link("a", "wellknown:inbox").unwrap().as_deref(), Some("in"));
+        store.put_messages(&[record("1", "in", "x", 1)]).unwrap();
+        assert!(store.message("a", "1").unwrap().unwrap().summary.focused);
         let contact = Contact {
             account: "a".into(),
             id: "c".into(),

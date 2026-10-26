@@ -221,7 +221,7 @@ async fn a_mailbox_syncs_end_to_end() {
     assert_eq!(pages, 3);
     {
         let store = store.lock().unwrap();
-        let rows = store.folder_rows("acct", "in", false).unwrap();
+        let rows = store.folder_rows("acct", "in", false, None).unwrap();
         let subjects: Vec<_> = rows.iter().map(|r| store.summary(*r).unwrap().unwrap().subject).collect();
         assert_eq!(subjects, ["third", "second"], "m1 was removed by the second page");
         assert_eq!(store.sync_link("acct", "messages:in").unwrap().unwrap(), format!("{base}/delta-token-1"));

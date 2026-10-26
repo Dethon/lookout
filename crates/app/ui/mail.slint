@@ -17,6 +17,9 @@ export component FolderPane inherits Rectangle {
     callback dropped-on(string, string);
     callback toggle-expanded(string, string);
     callback toggle-favourite(string, string);
+    // In an account, under a folder or at the top when empty.
+    callback new-folder(string, string);
+    callback delete-folder(string, string);
     // Puts the pane away.
     callback collapse();
     background: Theme.background;
@@ -118,6 +121,23 @@ export component FolderPane inherits Rectangle {
                                 title: folder.favourite ? "Remove from Favourites" : "Add to Favourites";
                                 activated => { root.toggle-favourite(folder.account, folder.id); }
                             }
+                            MenuItem {
+                                title: "New subfolder…";
+                                activated => { root.new-folder(folder.account, folder.id); }
+                            }
+                            if folder.own: MenuItem {
+                                title: "Delete folder…";
+                                activated => { root.delete-folder(folder.account, folder.id); }
+                            }
+                        }
+                    }
+                    // An account's heading.
+                    if folder.header && folder.account != "": ContextMenuArea {
+                        Menu {
+                            MenuItem {
+                                title: "New folder…";
+                                activated => { root.new-folder(folder.account, ""); }
+                            }
                         }
                     }
                     drop := DropArea {
@@ -215,12 +235,56 @@ export component FolderStrip inherits Rectangle {
     }
 }
 
+// Focused or Other, over an Inbox split in two.
+component ListTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <int> unread;
+    callback clicked();
+    width: row.preferred-width;
+    row := HorizontalLayout {
+        spacing: 5px;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.accent : touch.has-hover ? Theme.text : Theme.text-muted;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+        }
+        if root.unread > 0: Text {
+            text: root.unread > 999 ? "999+" : root.unread;
+            color: root.active ? Theme.accent : Theme.text-muted;
+            font-size: Theme.small;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: 2px;
+        border-radius: 1px;
+        background: root.active ? Theme.accent : transparent;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component MessageList inherits Rectangle {
     in property <[MessageRow]> messages;
     in property <string> title;
     in property <int> selected: -1;
     in property <bool> searching;
     in property <bool> unread-only;
+    // An Inbox split into Focused and Other, showing one of them.
+    in property <bool> split;
+    in property <bool> focused-tab: true;
+    in property <int> focused-unread;
+    in property <int> other-unread;
+    callback show-focused(bool);
+    // The messages at a row to Focused or Other; with the last, their
+    // senders' mail from now on.
+    callback focus-at(int, bool, bool);
     in property <bool> busy;
     in property <string> empty-text: "Nothing here";
     // Each row shows its sender's picture or initials.
@@ -318,6 +382,25 @@ export component MessageList inherits Rectangle {
                 label: root.unread-only ? "Unread" : "All";
                 tint: root.unread-only ? Theme.accent : Theme.text-muted;
                 clicked => { root.toggle-unread-only(); }
+            }
+        }
+        if root.split && !root.searching: HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 8px;
+            height: 30px;
+            spacing: 18px;
+            alignment: start;
+            ListTab {
+                label: "Focused";
+                active: root.focused-tab;
+                unread: root.focused-unread;
+                clicked => { root.show-focused(true); }
+            }
+            ListTab {
+                label: "Other";
+                active: !root.focused-tab;
+                unread: root.other-unread;
+                clicked => { root.show-focused(false); }
             }
         }
         Divider { }
@@ -537,6 +620,14 @@ export component MessageList inherits Rectangle {
                             title: message.junk ? "Not spam" : "Mark as spam";
                             activated => { root.junk-at(index); }
                         }
+                        if root.split: MenuItem {
+                            title: root.focused-tab ? "Move to Other" : "Move to Focused";
+                            activated => { root.focus-at(index, !root.focused-tab, false); }
+                        }
+                        if root.split: MenuItem {
+                            title: root.focused-tab ? "Always move to Other" : "Always move to Focused";
+                            activated => { root.focus-at(index, !root.focused-tab, true); }
+                        }
                         MenuItem {
                             title: "Move to…";
                             activated => { root.move-at(index); }
@@ -742,6 +833,11 @@ export component ReadingPane inherits Rectangle {
     in property <int> selection-count;
     // The list is a Junk Email folder: the selection goes back to the Inbox.
     in property <bool> junk-folder;
+    // The list is an Inbox split into Focused and Other, showing one.
+    in property <bool> split;
+    in property <bool> focused-tab: true;
+    // To Focused, or to Other.
+    callback move-focus(bool);
     callback bulk(string);
     callback clear-selection();
     callback reply();
@@ -813,14 +909,15 @@ export component ReadingPane inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             spacing: 4px;
-            ToolButton { icon: Icons.mail-open; label: "Mark read"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Mark read" : ""; clicked => { root.bulk("read"); } }
-            ToolButton { icon: Icons.mail; label: "Mark unread"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Mark unread" : ""; clicked => { root.bulk("unread"); } }
-            ToolButton { icon: Icons.flag-outline; label: "Flag"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Flag" : ""; clicked => { root.bulk("flag"); } }
-            ToolButton { icon: Icons.archive; label: "Archive"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Archive" : ""; clicked => { root.bulk("archive"); } }
-            if root.junk-folder: ToolButton { icon: Icons.inbox; label: "Not spam"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Not spam" : ""; clicked => { root.bulk("not-junk"); } }
-            if !root.junk-folder: ToolButton { icon: Icons.junk; label: "Spam"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Spam" : ""; clicked => { root.bulk("junk"); } }
-            ToolButton { icon: Icons.move; label: "Move"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Move" : ""; clicked => { root.bulk("move"); } }
-            ToolButton { icon: Icons.delete; label: "Delete"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Delete" : ""; tint: Theme.danger; clicked => { root.bulk("delete"); } }
+            ToolButton { icon: Icons.mail-open; label: "Mark read"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Mark read" : ""; clicked => { root.bulk("read"); } }
+            ToolButton { icon: Icons.mail; label: "Mark unread"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Mark unread" : ""; clicked => { root.bulk("unread"); } }
+            ToolButton { icon: Icons.flag-outline; label: "Flag"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Flag" : ""; clicked => { root.bulk("flag"); } }
+            ToolButton { icon: Icons.archive; label: "Archive"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Archive" : ""; clicked => { root.bulk("archive"); } }
+            if root.junk-folder: ToolButton { icon: Icons.inbox; label: "Not spam"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Not spam" : ""; clicked => { root.bulk("not-junk"); } }
+            if !root.junk-folder: ToolButton { icon: Icons.junk; label: "Spam"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Spam" : ""; clicked => { root.bulk("junk"); } }
+            if root.split: ToolButton { icon: Icons.focus; label: root.focused-tab ? "To Other" : "To Focused"; compact: root.bulk-compact; tooltip: root.bulk-compact ? (root.focused-tab ? "Move to Other" : "Move to Focused") : ""; clicked => { root.bulk(root.focused-tab ? "other" : "focused"); } }
+            ToolButton { icon: Icons.move; label: "Move"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Move" : ""; clicked => { root.bulk("move"); } }
+            ToolButton { icon: Icons.delete; label: "Delete"; compact: root.bulk-compact; tooltip: root.bulk-compact ? "Delete" : ""; tint: Theme.danger; clicked => { root.bulk("delete"); } }
         }
         HorizontalLayout {
             alignment: center;
@@ -855,6 +952,9 @@ export component ReadingPane inherits Rectangle {
     property <length> draft-room: root.reader.draft ? 100px : 0px;
     property <int> tier: root.width >= 700px + draft-room ? 3 : root.width >= 560px + draft-room ? 2 : root.width >= 420px ? 1 : 0;
     property <bool> compact: root.tier < 3;
+    // The buttons for several messages drop their labels sooner when there
+    // is one more, for Focused and Other.
+    property <bool> bulk-compact: root.tier < 3 || (root.split && root.width < 820px);
 
     // Placed, so the toolbar that fits the width doesn't decide it.
     if root.reader.open && root.selection-count <= 1: VerticalLayout {
@@ -913,6 +1013,11 @@ export component ReadingPane inherits Rectangle {
                 icon: root.reader.junk ? Icons.inbox : Icons.junk;
                 tooltip: root.reader.junk ? "Not spam: back to the Inbox, and unblock the sender" : "Mark as spam, and block the sender";
                 clicked => { root.junk(); }
+            }
+            if root.tier > 0 && root.split: IconButton {
+                icon: Icons.focus;
+                tooltip: root.focused-tab ? "Move to Other" : "Move to Focused";
+                clicked => { root.move-focus(!root.focused-tab); }
             }
             if root.tier > 0: IconButton {
                 icon: Icons.move;

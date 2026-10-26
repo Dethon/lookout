@@ -25,6 +25,8 @@ export struct FolderRow {
     favourite: bool,
     // Not a folder: the line between the standard folders and the user's own.
     divider: bool,
+    // One of the user's own, which can be deleted.
+    own: bool,
 }
 
 export struct MessageRow {

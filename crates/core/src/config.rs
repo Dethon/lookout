@@ -41,6 +41,9 @@ pub struct Config {
     pub notify_new_mail: bool,
     /// The message list shows each sender's picture or initials.
     pub list_avatars: bool,
+    /// The Inbox is split into Focused and Other, as Outlook sorts it, and
+    /// only mail in Focused is notified.
+    pub focused_inbox: bool,
     pub panes: Panes,
 }
 
@@ -78,6 +81,7 @@ impl Default for Config {
             close_to_tray: true,
             notify_new_mail: true,
             list_avatars: true,
+            focused_inbox: true,
             panes: Panes::default(),
         }
     }

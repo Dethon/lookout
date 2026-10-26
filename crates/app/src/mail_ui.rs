@@ -42,6 +42,11 @@ pub struct MailState {
     list: Rc<MessageList>,
     view: RefCell<View>,
     unread_only: Cell<bool>,
+    /// The Inbox shows Focused, or else Other.
+    focused_tab: Cell<bool>,
+    /// The folder the folder dialog makes a folder in or deletes: account,
+    /// and the folder or none for the top.
+    folder_target: RefCell<Option<(String, Option<String>)>>,
     selected: RefCell<Option<(String, String)>>,
     open_token: Cell<u64>,
     detail: RefCell<Option<MessageDetail>>,
@@ -106,6 +111,8 @@ impl MailState {
             list: MessageList::new(store, photos),
             view: RefCell::new(View::None),
             unread_only: Cell::new(false),
+            focused_tab: Cell::new(true),
+            folder_target: RefCell::new(None),
             selected: RefCell::new(None),
             open_token: Cell::new(0),
             detail: RefCell::new(None),
@@ -198,6 +205,16 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
         }
         reload(&app);
     }));
+    mail.on_show_focused(with_app!(app, |app, focused| {
+        app.mail.focused_tab.set(focused);
+        app.mail.list.clear();
+        app.mail.ticking.set(false);
+        reload(&app);
+    }));
+    mail.on_focus_at(with_app!(app, |app, index, focused, always| focus(&app, index, focused, always)));
+    mail.on_new_folder(with_app!(app, |app, account, parent| new_folder(&app, &account, &parent)));
+    mail.on_delete_folder(with_app!(app, |app, account, folder| ask_delete_folder(&app, &account, &folder)));
+    mail.on_folder_dialog_accepted(with_app!(app, |app, name| folder_dialog_accepted(&app, &name)));
     mail.on_toggle_flag_at(with_app!(app, |app, index| toggle_flag(&app, index)));
     mail.on_toggle_read_at(with_app!(app, |app, index| toggle_read(&app, index)));
     mail.on_delete_at(with_app!(app, |app, index| remove(&app, index, None)));
@@ -418,6 +435,7 @@ fn folder_rows(app: &App, ui: &MainWindow, account_filter: Option<&str>) -> Vec<
                 continue;
             }
             let unread = match folder.well_known.as_deref() {
+                Some("inbox") => inbox_unread(app, &account.id, folder),
                 // Counts of these folders aren't news.
                 Some("drafts") => folder.total,
                 Some("sentitems") | Some("deleteditems") | Some("junkemail") => 0,
@@ -436,6 +454,7 @@ fn folder_rows(app: &App, ui: &MainWindow, account_filter: Option<&str>) -> Vec<
                 expanded: expandable && !(pane && collapsed.contains(key.as_str())),
                 favourite: config.favourites.contains(&key),
                 divider: false,
+                own: folder.well_known.is_none(),
             };
             if pane {
                 let name = if several { format!("{} · {}", folder.name, account.email) } else { folder.name.clone() };
@@ -497,6 +516,16 @@ fn save_config(app: &App) {
     }
 }
 
+/// An Inbox's unread messages: with the split, only those in Focused, as
+/// Outlook counts them.
+fn inbox_unread(app: &App, account: &str, inbox: &lookout_core::model::Folder) -> u32 {
+    if app.config.borrow().focused_inbox {
+        app.store.unread_by_focus(account, &inbox.id).map(|(focused, _)| focused).unwrap_or(inbox.unread)
+    } else {
+        inbox.unread
+    }
+}
+
 /// What the folder strip shows: the favourites, or else the standard
 /// folders of the account in view.
 fn strip_rows(app: &App, ui: &MainWindow, rows: &[FolderRow]) -> Vec<FolderRow> {
@@ -519,7 +548,8 @@ fn strip_rows(app: &App, ui: &MainWindow, rows: &[FolderRow]) -> Vec<FolderRow> 
             let folder = folders.iter().find(|folder| folder.well_known.as_deref() == Some(*name))?;
             let unread = match *name {
                 "drafts" => folder.total,
-                "inbox" | "archive" => folder.unread,
+                "inbox" => inbox_unread(app, &account, folder),
+                "archive" => folder.unread,
                 _ => 0,
             };
             Some(FolderRow {
@@ -544,7 +574,8 @@ pub fn folders_changed(app: &Rc<App>) {
         .iter()
         .filter_map(|account| {
             let inbox = app.store.well_known_folder(&account.id, "inbox").ok()??;
-            Some(app.store.folders(&account.id).ok()?.into_iter().find(|f| f.id == inbox)?.unread as i32)
+            let inbox = app.store.folders(&account.id).ok()?.into_iter().find(|f| f.id == inbox)?;
+            Some(inbox_unread(app, &account.id, &inbox) as i32)
         })
         .sum();
     ui.set_window_title(if inbox_unread > 0 { format!("Lookout ({inbox_unread})") } else { "Lookout".into() }.into());
@@ -570,6 +601,138 @@ fn update_title(app: &App) {
         View::None => String::new(),
     };
     ui.global::<Mail>().set_list_title(title.into());
+}
+
+/// Whether the list is an Inbox split into Focused and Other, and if so,
+/// which of them it shows.
+fn split(app: &App) -> Option<bool> {
+    if !app.config.borrow().focused_inbox {
+        return None;
+    }
+    match &*app.mail.view.borrow() {
+        View::Folder { account, folder } => (app.store.well_known_folder(account, "inbox").ok().flatten().as_ref()
+            == Some(folder))
+        .then(|| app.mail.focused_tab.get()),
+        _ => None,
+    }
+}
+
+/// The Focused and Other tabs, with their unread counts.
+fn update_tabs(app: &App) {
+    let Some(ui) = app.ui() else { return };
+    let mail = ui.global::<Mail>();
+    let split = split(app);
+    mail.set_split(split.is_some());
+    mail.set_focused_tab(split.unwrap_or(true));
+    let (focused, other) = match &*app.mail.view.borrow() {
+        View::Folder { account, folder } if split.is_some() => app.store.unread_by_focus(account, folder).unwrap_or_default(),
+        _ => (0, 0),
+    };
+    mail.set_focused_unread(focused as i32);
+    mail.set_other_unread(other as i32);
+}
+
+pub fn focused_inbox_changed(app: &Rc<App>) {
+    app.mail.focused_tab.set(true);
+    reload(app);
+    folders_changed(app);
+}
+
+/// Moves the messages at `index` to Focused or Other; with `always`, their
+/// senders' mail goes there from now on.
+fn focus(app: &Rc<App>, index: i32, focused: bool, always: bool) {
+    let targets: Vec<MessageSummary> = targets_at(app, index).into_iter().filter(|m| m.focused != focused || always).collect();
+    move_focus(app, targets, focused, always);
+}
+
+fn move_focus(app: &Rc<App>, targets: Vec<MessageSummary>, focused: bool, always: bool) {
+    if targets.is_empty() {
+        return;
+    }
+    if split(app).is_some() {
+        leave(app, &targets);
+    }
+    if always {
+        let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
+        for message in targets {
+            by_account.entry(message.account).or_default().push(message.id);
+        }
+        for (account, ids) in by_account {
+            app.engine.send(Request::AlwaysFocus { account, ids, focused });
+        }
+    } else {
+        change(app, targets, |_| Bulk::Focus(focused));
+    }
+}
+
+/// Asks for the name of a new folder in `account`, under `parent` or at
+/// the top when it is empty.
+fn new_folder(app: &Rc<App>, account: &str, parent: &str) {
+    let Some(ui) = app.ui() else { return };
+    let parent = (!parent.is_empty()).then(|| parent.to_owned());
+    let within = match &parent {
+        Some(parent) => app.store.folders(account).unwrap_or_default().into_iter().find(|f| &f.id == parent).map(|f| f.name),
+        None => app.accounts.borrow().iter().find(|a| a.id == account).map(|a| a.email.clone()),
+    };
+    *app.mail.folder_target.borrow_mut() = Some((account.to_owned(), parent));
+    let mail = ui.global::<Mail>();
+    mail.set_folder_dialog_delete(false);
+    mail.set_folder_dialog_name(within.unwrap_or_default().into());
+    mail.set_folder_dialog_open(true);
+}
+
+/// Asks before deleting a folder, saying where it goes.
+fn ask_delete_folder(app: &Rc<App>, account: &str, folder: &str) {
+    let Some(ui) = app.ui() else { return };
+    let folders = app.store.folders(account).unwrap_or_default();
+    let Some(target) = folders.iter().find(|f| f.id == folder) else { return };
+    let deleted_items = app.store.well_known_folder(account, "deleteditems").ok().flatten();
+    let for_good = deleted_items.is_some_and(|deleted| within(&folders, folder, &deleted) && deleted != folder);
+    *app.mail.folder_target.borrow_mut() = Some((account.to_owned(), Some(folder.to_owned())));
+    let mail = ui.global::<Mail>();
+    mail.set_folder_dialog_delete(true);
+    mail.set_folder_dialog_for_good(for_good);
+    mail.set_folder_dialog_name(target.name.as_str().into());
+    mail.set_folder_dialog_open(true);
+}
+
+/// Whether `folder` is `ancestor` or somewhere under it.
+fn within(folders: &[lookout_core::model::Folder], folder: &str, ancestor: &str) -> bool {
+    let mut current = Some(folder.to_owned());
+    while let Some(id) = current {
+        if id == ancestor {
+            return true;
+        }
+        current = folders.iter().find(|f| f.id == id).and_then(|f| f.parent_id.clone());
+    }
+    false
+}
+
+fn folder_dialog_accepted(app: &Rc<App>, name: &str) {
+    let Some(ui) = app.ui() else { return };
+    let mail = ui.global::<Mail>();
+    let creating = !mail.get_folder_dialog_delete();
+    if creating && name.trim().is_empty() {
+        return;
+    }
+    let Some((account, folder)) = app.mail.folder_target.borrow_mut().take() else { return };
+    mail.set_folder_dialog_open(false);
+    if creating {
+        app.engine.send(Request::CreateFolder { account, parent: folder, name: name.trim().to_owned() });
+        return;
+    }
+    let Some(folder) = folder else { return };
+    // Shown, the folder makes way for the Inbox.
+    let shown = match &*app.mail.view.borrow() {
+        View::Folder { account: a, folder: f } => {
+            *a == account && within(&app.store.folders(&account).unwrap_or_default(), f, &folder)
+        }
+        _ => false,
+    };
+    if shown && let Ok(Some(inbox)) = app.store.well_known_folder(&account, "inbox") {
+        open_folder(app, &account, &inbox);
+    }
+    app.engine.send(Request::DeleteFolder { account, id: folder });
 }
 
 pub fn open_folder(app: &Rc<App>, account: &str, folder: &str) {
@@ -598,8 +761,15 @@ pub fn show_message(app: &Rc<App>, account: &str, folder: &str, id: &str) {
     let Some(ui) = app.ui() else { return };
     ui.global::<crate::Shell>().set_page(crate::Page::Mail);
     let shown = matches!(&*app.mail.view.borrow(), View::Folder { account: a, folder: f } if a == account && f == folder);
+    let focused = app.store.message(account, id).ok().flatten().map(|detail| detail.summary.focused);
+    let tab_changes = focused.is_some_and(|focused| focused != app.mail.focused_tab.get());
+    if let Some(focused) = focused {
+        app.mail.focused_tab.set(focused);
+    }
     if !shown {
         open_folder(app, account, folder);
+    } else if tab_changes {
+        reload(app);
     }
     if let Some(index) = app.mail.list.index_of(account, id) {
         select(app, index as i32);
@@ -610,7 +780,7 @@ pub fn show_message(app: &Rc<App>, account: &str, folder: &str, id: &str) {
 fn reload(app: &Rc<App>) {
     let rows = match &*app.mail.view.borrow() {
         View::Folder { account, folder } => {
-            app.store.folder_rows(account, folder, app.mail.unread_only.get()).unwrap_or_default()
+            app.store.folder_rows(account, folder, app.mail.unread_only.get(), split(app)).unwrap_or_default()
         }
         View::Search { query } => {
             let left = app.mail.left.borrow();
@@ -621,6 +791,7 @@ fn reload(app: &Rc<App>) {
     };
     app.mail.list.set_rows(rows);
     update_selection_count(app);
+    update_tabs(app);
     let Some(ui) = app.ui() else { return };
     let mail = ui.global::<Mail>();
     let selected = app.mail.selected.borrow().clone();
@@ -1048,6 +1219,7 @@ fn change(app: &App, messages: Vec<MessageSummary>, what: impl Fn(&MessageSummar
             Bulk::Flag(flag) => Request::SetFlag { account, id, flag },
             Bulk::Move(folder) => Request::Move { account, id, folder },
             Bulk::Delete => Request::Delete { account, id },
+            change @ Bulk::Focus(_) => Request::Bulk { account, ids: vec![id], change },
         };
         app.engine.send(request);
         return;
@@ -1183,6 +1355,11 @@ fn bulk(app: &Rc<App>, action: &str) {
             change(app, selection, |_| Bulk::Flag(flag));
         }
         "move" => show_move_dialog(app, selection),
+        "focused" | "other" => {
+            let focused = action == "focused";
+            let targets = selection.into_iter().filter(|m| m.focused != focused).collect();
+            move_focus(app, targets, focused, false);
+        }
         "junk" | "not-junk" => {
             leave(app, &selection);
             report(app, selection, if action == "junk" { Spam::Junk } else { Spam::NotJunk });

@@ -89,6 +89,9 @@ pub struct MessageSummary {
     pub flag: Flag,
     pub high_importance: bool,
     pub has_attachments: bool,
+    /// In the Focused part of the Inbox rather than Other, as Microsoft's
+    /// sorting or the user put it.
+    pub focused: bool,
 }
 
 /// A message opened in the reading pane.
@@ -316,13 +319,15 @@ pub mod wire {
         pub categories: Option<Vec<String>>,
         pub body: Option<ItemBody>,
         pub attachments: Option<Vec<AttachmentInfo>>,
+        /// `focused` or `other`.
+        pub inference_classification: Option<String>,
     }
 
     /// The fields fetched for the list; delta queries must keep asking for
     /// the same ones.
     pub const MESSAGE_FIELDS: &str = "id,parentFolderId,conversationId,subject,bodyPreview,from,\
         toRecipients,ccRecipients,replyTo,receivedDateTime,sentDateTime,isRead,isDraft,flag,\
-        importance,hasAttachments,categories";
+        importance,hasAttachments,categories,inferenceClassification";
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]

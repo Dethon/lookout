@@ -186,6 +186,7 @@ mod tests {
             flag: Flag::default(),
             high_importance: false,
             has_attachments: false,
+            focused: true,
         }
     }
 

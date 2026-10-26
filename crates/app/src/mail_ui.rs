@@ -1,7 +1,7 @@
 //! The mail page's behaviour.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use lookout_core::html::{self, Rendered};
 use lookout_core::mail::{Bulk, Draft, NewAttachment, ReplyKind, Spam};
 use lookout_core::model::{Address, Flag, MessageDetail, MessageSummary, wire};
+use lookout_core::store::RowId;
 use lookout_core::{Store, when};
 use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel};
 
@@ -66,6 +67,9 @@ pub struct MailState {
     /// A plain press on a row among several picked: on release, it is
     /// picked alone, unless the press became a drag.
     pending_click: Cell<Option<i32>>,
+    /// Messages moved or deleted from search results, which still match
+    /// wherever they went: kept out of the results until the search changes.
+    left: RefCell<HashSet<RowId>>,
     search_timer: Timer,
     search_token: Cell<u64>,
     original: OriginalState,
@@ -115,6 +119,7 @@ impl MailState {
             dragged: RefCell::new(Vec::new()),
             select_after: Cell::new(None),
             pending_click: Cell::new(None),
+            left: RefCell::new(HashSet::new()),
             search_timer: Timer::default(),
             search_token: Cell::new(0),
             original: OriginalState::default(),
@@ -333,6 +338,7 @@ fn ensure_view(app: &Rc<App>) {
             Some((inbox, account)) => open_folder(app, &account, &inbox),
             None => {
                 *app.mail.view.borrow_mut() = View::None;
+                app.mail.left.borrow_mut().clear();
                 app.mail.list.set_rows(Vec::new());
                 close_reader(app);
             }
@@ -563,6 +569,7 @@ fn update_title(app: &App) {
 pub fn open_folder(app: &Rc<App>, account: &str, folder: &str) {
     let Some(ui) = app.ui() else { return };
     *app.mail.view.borrow_mut() = View::Folder { account: account.into(), folder: folder.into() };
+    app.mail.left.borrow_mut().clear();
     let mail = ui.global::<Mail>();
     mail.set_selected_account(account.into());
     mail.set_selected_folder(folder.into());
@@ -599,7 +606,11 @@ fn reload(app: &Rc<App>) {
         View::Folder { account, folder } => {
             app.store.folder_rows(account, folder, app.mail.unread_only.get()).unwrap_or_default()
         }
-        View::Search { query } => app.store.search_rows(None, query, SEARCH_LIMIT).unwrap_or_default(),
+        View::Search { query } => {
+            let left = app.mail.left.borrow();
+            let rows = app.store.search_rows(None, query, SEARCH_LIMIT).unwrap_or_default();
+            rows.into_iter().filter(|row| !left.contains(row)).collect()
+        }
         View::None => Vec::new(),
     };
     app.mail.list.set_rows(rows);
@@ -654,6 +665,7 @@ fn search_typed(app: &Rc<App>, text: SharedString) {
             app.remember_view_before_search();
         }
         *app.mail.view.borrow_mut() = View::Search { query };
+        app.mail.left.borrow_mut().clear();
         ui.global::<Mail>().set_searching(true);
         reload(&app);
         update_title(&app);
@@ -1067,9 +1079,10 @@ fn move_messages(app: &Rc<App>, messages: Vec<(String, String)>, account: &str, 
     change(app, summaries, |_| Bulk::Move(folder.to_owned()));
 }
 
-/// Closes the open message if it is among those leaving the list, to open
-/// the one after them once they are gone.
-fn leave(app: &App, messages: &[MessageSummary]) {
+/// Messages leaving the list, moved or deleted: they are let go if picked,
+/// leave search results at once, and the open message closes if it is
+/// among them, to open the one after them once they are gone.
+fn leave(app: &Rc<App>, messages: &[MessageSummary]) {
     let open_leaves = messages
         .iter()
         .any(|m| app.mail.selected.borrow().as_ref().is_some_and(|(_, id)| *id == m.id));
@@ -1078,6 +1091,18 @@ fn leave(app: &App, messages: &[MessageSummary]) {
         *app.mail.selected.borrow_mut() = None;
         close_reader(app);
         app.mail.select_after.set(first);
+    }
+    let picked = messages.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).any(|i| app.mail.list.is_selected(i));
+    if picked {
+        app.mail.list.clear();
+    }
+    let searching = matches!(*app.mail.view.borrow(), View::Search { .. });
+    if searching {
+        let rows = messages.iter().filter_map(|m| app.store.row_of(&m.account, &m.id).ok().flatten());
+        app.mail.left.borrow_mut().extend(rows);
+        reload(app);
+    } else {
+        update_selection_count(app);
     }
 }
 
@@ -1124,17 +1149,11 @@ fn bulk(app: &Rc<App>, action: &str) {
         }
         "move" => show_move_dialog(app, selection),
         "junk" | "not-junk" => {
-            let first = selection.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
-            *app.mail.selected.borrow_mut() = None;
-            close_reader(app);
-            app.mail.select_after.set(first);
+            leave(app, &selection);
             report(app, selection, if action == "junk" { Spam::Junk } else { Spam::NotJunk });
         }
         "archive" | "delete" => {
-            let first = selection.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
-            *app.mail.selected.borrow_mut() = None;
-            close_reader(app);
-            app.mail.select_after.set(first);
+            leave(app, &selection);
             let destination = (action == "archive").then(|| "archive".to_owned());
             change(app, selection, |_| match &destination {
                 Some(folder) => Bulk::Move(folder.clone()),

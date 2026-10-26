@@ -2,6 +2,7 @@
 //! flow with PKCE, answered on a loopback port, as a public client. Works
 //! for personal accounts and work or school ones alike (`common`).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -17,6 +18,9 @@ use crate::{Error, Result, secrets};
 const AUTHORITY: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const SCOPES: &str = "offline_access openid profile User.Read Mail.ReadWrite Mail.Send \
                       Calendars.ReadWrite Contacts.ReadWrite MailboxSettings.Read";
+// Writing inbox rules, as blocking a sender does. Asked for the first time a
+// sender is blocked, not at sign-in.
+const RULES_SCOPE: &str = "MailboxSettings.ReadWrite";
 // Renewed this long before it expires, so a request never carries a token
 // that runs out on the way.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(300);
@@ -24,7 +28,7 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(300);
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(600);
 const DONE_PAGE: &str = "<!doctype html><html><head><meta charset=utf-8><title>Lookout</title></head>\
     <body style=\"font-family:sans-serif;text-align:center;margin-top:20vh\">\
-    <h1>Signed in to Lookout</h1><p>You can close this tab.</p></body></html>";
+    <h1>Done</h1><p>You can close this tab and return to Lookout.</p></body></html>";
 const FAILED_PAGE: &str = "<!doctype html><html><head><meta charset=utf-8><title>Lookout</title></head>\
     <body style=\"font-family:sans-serif;text-align:center;margin-top:20vh\">\
     <h1>Sign-in didn't finish</h1><p>Return to Lookout and try again.</p></body></html>";
@@ -65,6 +69,10 @@ pub struct Session {
     account: String,
     http: reqwest::Client,
     tokens: Mutex<Option<Tokens>>,
+    /// Inbox rules may be written: the tokens carry `RULES_SCOPE`.
+    rules: AtomicBool,
+    /// Held while asking for `RULES_SCOPE`, so the browser opens once.
+    asking: Mutex<()>,
 }
 
 impl Session {
@@ -80,7 +88,13 @@ impl Session {
                 expires: Instant::now(),
                 refresh,
             })),
+            rules: AtomicBool::new(false),
+            asking: Mutex::new(()),
         })
+    }
+
+    fn scopes(&self) -> String {
+        if self.rules.load(Ordering::Relaxed) { format!("{SCOPES} {RULES_SCOPE}") } else { SCOPES.to_owned() }
     }
 
     /// A token valid for a few more minutes at least.
@@ -90,7 +104,7 @@ impl Session {
         if !current.access.is_empty() && current.expires > Instant::now() + EXPIRY_MARGIN {
             return Ok(current.access.clone());
         }
-        let refreshed = self.redeem_refresh(&current.refresh).await;
+        let refreshed = self.redeem_refresh(&current.refresh, &self.scopes()).await;
         match refreshed {
             Ok(fresh) => {
                 let access = fresh.access.clone();
@@ -117,12 +131,53 @@ impl Session {
         }
     }
 
-    async fn redeem_refresh(&self, refresh: &str) -> Result<Tokens> {
+    /// Lets this session write inbox rules: at once if the permission was
+    /// granted before, here or on another device; otherwise in the browser,
+    /// for `email`, calling `asking` as it opens.
+    pub async fn allow_rules(&self, email: &str, asking: impl FnOnce()) -> Result<()> {
+        if self.rules.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let _asking = self.asking.lock().await;
+        if self.rules.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let scopes = format!("{SCOPES} {RULES_SCOPE}");
+        {
+            let mut tokens = self.tokens.lock().await;
+            let refresh = tokens.as_ref().ok_or(Error::SignInRequired)?.refresh.clone();
+            match self.redeem_refresh(&refresh, &scopes).await {
+                Ok(fresh) => {
+                    if fresh.refresh != refresh {
+                        secrets::store(&self.account, &fresh.refresh)?;
+                    }
+                    *tokens = Some(fresh);
+                    self.rules.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
+                // Not granted yet (consent_required); the refresh token
+                // itself still works.
+                Err(Error::SignInRequired | Error::Auth(_)) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        asking();
+        let fresh = authorize(&self.http, &self.client_id, &scopes, ("login_hint", email)).await?;
+        if who(&self.http, &fresh.access).await?.id != self.account {
+            return Err(Error::Auth(format!("approved for another account than {email}")));
+        }
+        secrets::store(&self.account, &fresh.refresh)?;
+        *self.tokens.lock().await = Some(fresh);
+        self.rules.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn redeem_refresh(&self, refresh: &str, scopes: &str) -> Result<Tokens> {
         let form = [
             ("client_id", self.client_id.as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh),
-            ("scope", SCOPES),
+            ("scope", scopes),
         ];
         let response = self
             .http
@@ -149,6 +204,8 @@ impl Session {
                 expires: Instant::now() + Duration::from_secs(86400),
                 refresh: String::new(),
             })),
+            rules: AtomicBool::new(true),
+            asking: Mutex::new(()),
         }
     }
 }
@@ -185,6 +242,40 @@ async fn tokens_from(response: reqwest::Response, old_refresh: Option<&str>) -> 
 
 /// Signs in a new account in the browser. Returns its session and who it is.
 pub async fn sign_in(http: reqwest::Client, client_id: &str) -> Result<(Session, Account)> {
+    let tokens = authorize(&http, client_id, SCOPES, ("prompt", "select_account")).await?;
+    let me = who(&http, &tokens.access).await?;
+    let account = Account {
+        id: me.id,
+        email: me.mail.filter(|mail| !mail.is_empty()).unwrap_or(me.user_principal_name),
+        name: me.display_name.unwrap_or_default(),
+    };
+    secrets::store(&account.id, &tokens.refresh)?;
+    let session = Session {
+        client_id: client_id.to_owned(),
+        account: account.id.clone(),
+        http,
+        tokens: Mutex::new(Some(tokens)),
+        rules: AtomicBool::new(false),
+        asking: Mutex::new(()),
+    };
+    Ok((session, account))
+}
+
+/// Who the token is for.
+async fn who(http: &reqwest::Client, access: &str) -> Result<Me> {
+    Ok(http
+        .get(format!("{}/me?$select=id,displayName,mail,userPrincipalName", crate::graph::BASE))
+        .bearer_auth(access)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+/// Asks for `scopes` in the browser and redeems the code it comes back
+/// with; `hint` is one more query pair, such as the account to choose.
+async fn authorize(http: &reqwest::Client, client_id: &str, scopes: &str, hint: (&str, &str)) -> Result<Tokens> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let redirect = format!("http://localhost:{port}");
@@ -198,11 +289,11 @@ pub async fn sign_in(http: reqwest::Client, client_id: &str) -> Result<(Session,
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", &redirect)
         .append_pair("response_mode", "query")
-        .append_pair("scope", SCOPES)
+        .append_pair("scope", scopes)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state)
-        .append_pair("prompt", "select_account");
+        .append_pair(hint.0, hint.1);
     open::that_detached(url.as_str()).map_err(|error| Error::Auth(format!("opening the browser: {error}")))?;
 
     let code = tokio::time::timeout(SIGN_IN_TIMEOUT, receive_code(&listener, &state))
@@ -215,32 +306,10 @@ pub async fn sign_in(http: reqwest::Client, client_id: &str) -> Result<(Session,
         ("code", code.as_str()),
         ("redirect_uri", redirect.as_str()),
         ("code_verifier", verifier.as_str()),
-        ("scope", SCOPES),
+        ("scope", scopes),
     ];
     let response = http.post(format!("{AUTHORITY}/token")).form(&form).send().await?;
-    let tokens = tokens_from(response, None).await?;
-
-    let me: Me = http
-        .get(format!("{}/me?$select=id,displayName,mail,userPrincipalName", crate::graph::BASE))
-        .bearer_auth(&tokens.access)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let account = Account {
-        id: me.id,
-        email: me.mail.filter(|mail| !mail.is_empty()).unwrap_or(me.user_principal_name),
-        name: me.display_name.unwrap_or_default(),
-    };
-    secrets::store(&account.id, &tokens.refresh)?;
-    let session = Session {
-        client_id: client_id.to_owned(),
-        account: account.id.clone(),
-        http,
-        tokens: Mutex::new(Some(tokens)),
-    };
-    Ok((session, account))
+    tokens_from(response, None).await
 }
 
 /// Forgets an account's refresh token.

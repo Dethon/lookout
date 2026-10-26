@@ -66,6 +66,19 @@ impl Graph {
         self.session.account_id()
     }
 
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// `path` under the beta root, for what v1.0 lacks; the result passes
+    /// through as a full link.
+    pub fn beta(&self, path: &str) -> String {
+        match self.base.strip_suffix("/v1.0") {
+            Some(root) => format!("{root}/beta{path}"),
+            None => format!("{}{path}", self.base),
+        }
+    }
+
     /// `path` is relative to the v1.0 root, or a full link Graph returned.
     fn url(&self, path: &str) -> String {
         if path.starts_with("https://") || path.starts_with("http://") {

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use lookout_core::html::{self, Rendered};
-use lookout_core::mail::{Bulk, Draft, NewAttachment, ReplyKind};
+use lookout_core::mail::{Bulk, Draft, NewAttachment, ReplyKind, Spam};
 use lookout_core::model::{Address, Flag, MessageDetail, MessageSummary, wire};
 use lookout_core::{Store, when};
 use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel};
@@ -992,30 +992,32 @@ fn change(app: &App, messages: Vec<MessageSummary>, what: impl Fn(&MessageSummar
 /// Deletes the messages at `index`, or moves them to `destination`.
 fn remove(app: &Rc<App>, index: i32, destination: Option<String>) {
     let targets = targets_at(app, index);
-    let first = targets.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
-    let open_leaves = targets
-        .iter()
-        .any(|m| app.mail.selected.borrow().as_ref().is_some_and(|(_, id)| *id == m.id));
-    if open_leaves {
-        *app.mail.selected.borrow_mut() = None;
-        close_reader(app);
-        app.mail.select_after.set(first);
-    }
+    leave(app, &targets);
     change(app, targets, |_| match &destination {
         Some(folder) => Bulk::Move(folder.clone()),
         None => Bulk::Delete,
     });
 }
 
-/// Moves the messages at `index` to Junk Email, or back to the Inbox when
-/// they are all there already.
+/// Marks the messages at `index` as spam, or as not spam when they are all
+/// in Junk Email already.
 fn junk(app: &Rc<App>, index: i32) {
     let targets = targets_at(app, index);
-    if targets.is_empty() {
-        return;
+    let spam = if targets.iter().all(|m| crate::models::in_junk(&app.store, m)) { Spam::NotJunk } else { Spam::Junk };
+    leave(app, &targets);
+    report(app, targets, spam);
+}
+
+/// Moves `messages` to Junk Email or back to the Inbox, reports them to
+/// Microsoft, and blocks or unblocks their senders.
+fn report(app: &App, messages: Vec<MessageSummary>, spam: Spam) {
+    let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
+    for message in messages {
+        by_account.entry(message.account).or_default().push(message.id);
     }
-    let destination = if targets.iter().all(|m| crate::models::in_junk(&app.store, m)) { "inbox" } else { "junkemail" };
-    remove(app, index, Some(destination.into()));
+    for (account, ids) in by_account {
+        app.engine.send(Request::Report { account, ids, spam });
+    }
 }
 
 /// Moves messages dragged onto a folder of `account`.
@@ -1032,16 +1034,22 @@ fn move_messages(app: &Rc<App>, messages: Vec<(String, String)>, account: &str, 
     if summaries.is_empty() {
         return;
     }
-    let open_leaves = summaries
+    leave(app, &summaries);
+    change(app, summaries, |_| Bulk::Move(folder.to_owned()));
+}
+
+/// Closes the open message if it is among those leaving the list, to open
+/// the one after them once they are gone.
+fn leave(app: &App, messages: &[MessageSummary]) {
+    let open_leaves = messages
         .iter()
         .any(|m| app.mail.selected.borrow().as_ref().is_some_and(|(_, id)| *id == m.id));
     if open_leaves {
-        let first = summaries.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
+        let first = messages.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
         *app.mail.selected.borrow_mut() = None;
         close_reader(app);
         app.mail.select_after.set(first);
     }
-    change(app, summaries, |_| Bulk::Move(folder.to_owned()));
 }
 
 fn open_move(app: &Rc<App>, index: i32) {
@@ -1086,18 +1094,19 @@ fn bulk(app: &Rc<App>, action: &str) {
             change(app, selection, |_| Bulk::Flag(flag));
         }
         "move" => show_move_dialog(app, selection),
-        "archive" | "delete" | "junk" | "not-junk" => {
+        "junk" | "not-junk" => {
             let first = selection.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
             *app.mail.selected.borrow_mut() = None;
             close_reader(app);
             app.mail.select_after.set(first);
-            let destination = match action {
-                "archive" => Some("archive"),
-                "junk" => Some("junkemail"),
-                "not-junk" => Some("inbox"),
-                _ => None,
-            }
-            .map(str::to_owned);
+            report(app, selection, if action == "junk" { Spam::Junk } else { Spam::NotJunk });
+        }
+        "archive" | "delete" => {
+            let first = selection.iter().filter_map(|m| app.mail.list.index_of(&m.account, &m.id)).min();
+            *app.mail.selected.borrow_mut() = None;
+            close_reader(app);
+            app.mail.select_after.set(first);
+            let destination = (action == "archive").then(|| "archive".to_owned());
             change(app, selection, |_| match &destination {
                 Some(folder) => Bulk::Move(folder.clone()),
                 None => Bulk::Delete,

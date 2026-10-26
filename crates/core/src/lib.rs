@@ -9,6 +9,7 @@ pub mod html;
 pub mod mail;
 pub mod people;
 pub mod release;
+pub mod rules;
 pub mod model;
 mod secrets;
 pub mod store;

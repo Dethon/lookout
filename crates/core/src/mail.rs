@@ -251,6 +251,11 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
         store.remove_messages(account, &forget)?;
     }
     cached();
+    run_batch(graph, "/$batch", &requests).await
+}
+
+/// Sends `requests` to the batch endpoint at `path`, twenty at a time.
+async fn run_batch(graph: &Graph, path: &str, requests: &[serde_json::Value]) -> Result<()> {
     let mut failed = 0;
     let mut first_error = None;
     for chunk in requests.chunks(BATCH) {
@@ -264,7 +269,7 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
                 request
             })
             .collect();
-        let reply: BatchReply = graph.post("/$batch", &json!({ "requests": numbered })).await?;
+        let reply: BatchReply = graph.post(path, &json!({ "requests": numbered })).await?;
         for item in reply.responses.iter().filter(|item| item.status >= 300) {
             failed += 1;
             first_error.get_or_insert_with(|| {
@@ -280,6 +285,52 @@ pub async fn bulk(graph: &Graph, store: &Mutex<Store>, ids: &[String], change: &
         }),
         None => Ok(()),
     }
+}
+
+/// What messages are reported to Microsoft as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spam {
+    Junk,
+    NotJunk,
+}
+
+impl Spam {
+    /// Where the messages go: Junk Email, or back to the Inbox.
+    pub fn folder(self) -> &'static str {
+        match self {
+            Spam::Junk => "junkemail",
+            Spam::NotJunk => "inbox",
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            Spam::Junk => "junk",
+            Spam::NotJunk => "notJunk",
+        }
+    }
+}
+
+/// Moves the messages `ids` to Junk Email or the Inbox, then reports them to
+/// Microsoft as junk or not, which teaches its filter. Reporting is only in
+/// Graph's beta: should it fail, the messages are moved all the same.
+pub async fn report(graph: &Graph, store: &Mutex<Store>, ids: &[String], spam: Spam, cached: impl FnOnce()) -> Result<()> {
+    let moved = bulk(graph, store, ids, &Bulk::Move(spam.folder().into()), cached).await;
+    let requests: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            json!({
+                "method": "POST",
+                "url": format!("/me/messages/{}/reportMessage", encode(id)),
+                // Moved above, to a folder known beforehand.
+                "body": { "IsMessageMoveRequested": false, "ReportAction": spam.action() },
+            })
+        })
+        .collect();
+    if let Err(error) = run_batch(graph, &graph.beta("/$batch"), &requests).await {
+        log::warn!("reporting {} messages as {}: {error}", ids.len(), spam.action());
+    }
+    moved
 }
 
 /// A file to attach.

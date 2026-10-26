@@ -882,7 +882,7 @@ export component ReadingPane inherits Rectangle {
             }
             if root.tier > 0: IconButton {
                 icon: root.reader.junk ? Icons.inbox : Icons.junk;
-                tooltip: root.reader.junk ? "Not spam: back to the Inbox" : "Mark as spam";
+                tooltip: root.reader.junk ? "Not spam: back to the Inbox, and unblock the sender" : "Mark as spam, and block the sender";
                 clicked => { root.junk(); }
             }
             if root.tier > 0: IconButton {

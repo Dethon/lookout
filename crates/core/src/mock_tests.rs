@@ -87,6 +87,22 @@ fn message(id: &str, subject: &str, received: &str, read: bool) -> serde_json::V
 fn mailbox(method: &str, target: &str, body: &str, base: &str) -> (u16, String) {
     let path = target.strip_prefix("/v1.0").unwrap_or(target);
     let reply = match (method, path) {
+        // Reports as not junk are taken; as junk, refused.
+        ("POST", "/beta/$batch") => {
+            let requests: serde_json::Value = serde_json::from_str(body).unwrap();
+            let responses: Vec<_> = requests["requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|request| {
+                    assert!(request["url"].as_str().unwrap().ends_with("/reportMessage"));
+                    assert_eq!(request["body"]["IsMessageMoveRequested"], false);
+                    let status = if request["body"]["ReportAction"] == "notJunk" { 200 } else { 400 };
+                    json!({ "id": request["id"], "status": status, "body": {} })
+                })
+                .collect();
+            json!({ "responses": responses })
+        }
         ("POST", "/$batch") if body.contains("\"PATCH\"") || body.contains("/move") => {
             let requests: serde_json::Value = serde_json::from_str(body).unwrap();
             let responses: Vec<_> = requests["requests"]
@@ -246,6 +262,14 @@ async fn a_mailbox_syncs_end_to_end() {
     assert_eq!(counts("in"), (inbox.0 - 2, inbox.1 - 2));
     assert_eq!(counts("dr"), (drafts.0 + 2, drafts.1 + 2));
 
+    // Not spam goes back to the Inbox and is reported, through the beta.
+    mail::report(&graph, &store, &["m2".into()], mail::Spam::NotJunk, || {}).await.unwrap();
+    assert_eq!(store.lock().unwrap().folder_of("acct", "m2").unwrap().as_deref(), Some("in"));
+    assert!(log.lock().unwrap().iter().any(|r| r == "POST /beta/$batch"));
+    // A refused report still leaves the message moved.
+    mail::report(&graph, &store, &["m2".into()], mail::Spam::Junk, || {}).await.unwrap();
+    assert_eq!(store.lock().unwrap().folder_of("acct", "m2").unwrap().as_deref(), Some("junkemail"));
+
     // Calendars and contacts.
     sync::sync_calendars(&graph, &store).await.unwrap();
     let start = crate::when::parse_instant("2026-10-19T00:00:00Z");
@@ -289,4 +313,75 @@ async fn errors_carry_graphs_message() {
     let (base, _) = serve(handler).await;
     let error = graph(&base).get::<serde_json::Value>("/me").await.unwrap_err();
     assert!(matches!(error, crate::Error::Graph { status: 403, ref message, .. } if message == "Access is denied."));
+}
+
+#[tokio::test]
+async fn blocked_senders_are_kept_in_one_rule() {
+    // The rule as the server holds it.
+    let rule: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let held = rule.clone();
+    let handler: Handler = Arc::new(move |method, target, body, _| {
+        let path = target.strip_prefix("/v1.0").unwrap_or(target);
+        let mut rule = held.lock().unwrap();
+        let reply = match (method, path) {
+            ("GET", "/me/mailFolders/inbox/messageRules") => {
+                let rules: Vec<_> = [json!({ "id": "other", "displayName": "Newsletters" })].into_iter().chain(rule.clone()).collect();
+                json!({ "value": rules })
+            }
+            ("GET", "/me/mailFolders/junkemail?$select=id") => json!({ "id": "jk" }),
+            ("POST", "/me/mailFolders/inbox/messageRules") => {
+                let mut created: serde_json::Value = serde_json::from_str(body).unwrap();
+                created["id"] = json!("r1");
+                *rule = Some(created.clone());
+                return (201, created.to_string());
+            }
+            ("PATCH", "/me/mailFolders/inbox/messageRules/r1") => {
+                let change: serde_json::Value = serde_json::from_str(body).unwrap();
+                rule.as_mut().unwrap()["conditions"] = change["conditions"].clone();
+                json!({})
+            }
+            ("DELETE", "/me/mailFolders/inbox/messageRules/r1") => {
+                *rule = None;
+                return (204, String::new());
+            }
+            _ => return (404, json!({ "error": { "code": "notFound", "message": path } }).to_string()),
+        };
+        (200, reply.to_string())
+    });
+    let (base, log) = serve(handler).await;
+    let graph = graph(&base);
+    let store = Mutex::new(Store::open_in_memory().unwrap());
+    let addresses = |rule: &Option<serde_json::Value>| -> Vec<String> {
+        rule.as_ref().map_or_else(Vec::new, |rule| {
+            rule["conditions"]["fromAddresses"].as_array().unwrap().iter().map(|r| r["emailAddress"]["address"].as_str().unwrap().to_owned()).collect()
+        })
+    };
+    let block = |list: &[&str], blocked| {
+        let list: Vec<String> = list.iter().map(|s| s.to_string()).collect();
+        let graph = graph.clone();
+        let store = &store;
+        async move { crate::rules::block_senders(&graph, store, &list, blocked, "me@x.test", || panic!("no browser in tests")).await }
+    };
+
+    // The first sender creates the rule, moving to Junk Email by its id.
+    block(&["ads@x.test"], true).await.unwrap();
+    {
+        let rule = rule.lock().unwrap();
+        assert_eq!(rule.as_ref().unwrap()["displayName"], crate::rules::RULE_NAME);
+        assert_eq!(rule.as_ref().unwrap()["actions"]["moveToFolder"], "jk");
+        assert_eq!(addresses(&rule), ["ads@x.test"]);
+    }
+    // Later ones are added to it, once.
+    block(&["spam@y.test", "ADS@x.test"], true).await.unwrap();
+    assert_eq!(addresses(&rule.lock().unwrap()), ["ads@x.test", "spam@y.test"]);
+    // Unblocking a sender who isn't blocked changes nothing.
+    let writes = |log: &Mutex<Vec<String>>| log.lock().unwrap().iter().filter(|r| !r.starts_with("GET")).count();
+    let before = writes(&log);
+    block(&["friend@z.test"], false).await.unwrap();
+    assert_eq!(writes(&log), before);
+    // Taking the last one off removes the rule.
+    block(&["ads@x.test"], false).await.unwrap();
+    assert_eq!(addresses(&rule.lock().unwrap()), ["spam@y.test"]);
+    block(&["Spam@Y.test"], false).await.unwrap();
+    assert!(rule.lock().unwrap().is_none());
 }

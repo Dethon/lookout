@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lookout_core::calendar::{Answer, EventDraft};
-use lookout_core::mail::{Draft, ReplyKind};
+use lookout_core::mail::{Draft, ReplyKind, Spam};
 use lookout_core::model::{Attachment, Contact, Flag, MessageDetail, MessageSummary, wire};
-use lookout_core::{Account, Config, Error, Graph, Session, Store, auth, calendar, graph, mail, people, sync};
+use lookout_core::{Account, Config, Error, Graph, Session, Store, auth, calendar, graph, mail, people, rules, sync};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -53,6 +53,9 @@ pub enum Request {
     Delete { account: String, id: String },
     /// One change to several messages of an account.
     Bulk { account: String, ids: Vec<String>, change: mail::Bulk },
+    /// Messages of an account marked as spam or not: moved, reported to
+    /// Microsoft, and their senders blocked or unblocked.
+    Report { account: String, ids: Vec<String>, spam: Spam },
     StartReply { account: String, id: String, kind: ReplyKind, token: u64 },
     Send { account: String, draft: Box<Draft>, reply: Option<Box<wire::Message>>, existing: Option<String> },
     SaveDraft { account: String, draft: Draft },
@@ -114,6 +117,9 @@ struct Inner {
     /// One message sync at a time per account, so delta pages aren't
     /// applied twice.
     sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One change to the blocked senders' rule at a time, so that two
+    /// made together don't each create it.
+    rules_lock: tokio::sync::Mutex<()>,
     calendar_window: Mutex<(i64, i64)>,
     last_calendar: Mutex<Option<Instant>>,
     last_contacts: Mutex<Option<Instant>>,
@@ -179,6 +185,7 @@ async fn run(store_path: PathBuf, config: Config, notify: Notify, mut receiver: 
         accounts: Mutex::new(HashMap::new()),
         watched: Mutex::new(HashMap::new()),
         sync_locks: Mutex::new(HashMap::new()),
+        rules_lock: tokio::sync::Mutex::new(()),
         calendar_window: Mutex::new((now - CALENDAR_BEFORE, now + CALENDAR_AFTER)),
         last_calendar: Mutex::new(None),
         last_contacts: Mutex::new(None),
@@ -443,6 +450,7 @@ impl Inner {
                 | Request::Move { .. }
                 | Request::Delete { .. }
                 | Request::Bulk { .. }
+                | Request::Report { .. }
                 | Request::Send { .. }
                 | Request::SaveDraft { .. }
                 | Request::SaveEvent { .. }
@@ -537,6 +545,38 @@ impl Inner {
                 };
                 if let Err(error) = mail::bulk(&graph, &self.store, &ids, &change, refresh).await {
                     self.report("Changing the messages", &error);
+                }
+            }
+            Request::Report { account, ids, spam } => {
+                let Some(graph) = self.graph(&account) else { return };
+                let (sources, mut senders, email) = {
+                    let store = self.store.lock().unwrap();
+                    let summaries: Vec<MessageSummary> =
+                        ids.iter().filter_map(|id| store.message(&account, id).ok().flatten()).map(|d| d.summary).collect();
+                    let email = store.accounts().unwrap_or_default().into_iter().find(|a| a.id == account).map(|a| a.email);
+                    let senders: Vec<String> = summaries.iter().map(|m| m.from.address.clone()).collect();
+                    (summaries.into_iter().map(|m| m.folder_id).collect::<HashSet<_>>(), senders, email.unwrap_or_default())
+                };
+                // Never the account itself, as when its own mail is marked.
+                senders.retain(|sender| !sender.is_empty() && !sender.eq_ignore_ascii_case(&email));
+                let refresh = || {
+                    for folder in &sources {
+                        self.emit(Event::Messages { account: account.clone(), folder: folder.clone() });
+                    }
+                    self.emit(Event::Folders);
+                };
+                if let Err(error) = mail::report(&graph, &self.store, &ids, spam, refresh).await {
+                    self.report("Moving the messages", &error);
+                }
+                let blocked = spam == Spam::Junk;
+                let _rules = self.rules_lock.lock().await;
+                let asking = || self.emit(Event::Status("Allow Lookout to block senders in the browser".into()));
+                match rules::block_senders(&graph, &self.store, &senders, blocked, &email, asking).await {
+                    Ok(()) if blocked && !senders.is_empty() => {
+                        self.emit(Event::Status("Their mail will go to Junk Email from now on".into()));
+                    }
+                    Ok(()) => {}
+                    Err(error) => self.report(if blocked { "Blocking the sender" } else { "Unblocking the sender" }, &error),
                 }
             }
             Request::StartReply { account, id, kind, token } => {

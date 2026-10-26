@@ -110,6 +110,7 @@ export global Mail {
     in property <bool> junk-folder;
     callback bulk(string);
     callback clear-selection();
+    callback select-all();
     callback search(string);
     callback search-server();
     callback toggle-unread-only();
@@ -868,6 +869,10 @@ export component MainWindow inherits Window {
                                 archive-at(index) => { Mail.archive-at(index); }
                                 junk-at(index) => { Mail.junk-at(index); }
                                 move-at(index) => { Mail.move-at(index); }
+                                select-all => {
+                                    Mail.select-all();
+                                    keys.focus();
+                                }
                                 scrolled-to-end => { Mail.load-more(); }
                             }
                             if !Panes.reading-only: Splitter {

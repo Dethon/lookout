@@ -63,6 +63,9 @@ pub struct MailState {
     dragged: RefCell<Vec<(String, String)>>,
     /// After a message leaves the list, the next one at this place opens.
     select_after: Cell<Option<usize>>,
+    /// A plain press on a row among several picked: on release, it is
+    /// picked alone, unless the press became a drag.
+    pending_click: Cell<Option<i32>>,
     search_timer: Timer,
     search_token: Cell<u64>,
     original: OriginalState,
@@ -111,6 +114,7 @@ impl MailState {
             move_target: RefCell::new(Vec::new()),
             dragged: RefCell::new(Vec::new()),
             select_after: Cell::new(None),
+            pending_click: Cell::new(None),
             search_timer: Timer::default(),
             search_token: Cell::new(0),
             original: OriginalState::default(),
@@ -147,6 +151,7 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
     mail.on_toggle_favourite(with_app!(app, |app, account, folder| toggle_favourite(&app, &account, &folder)));
     mail.on_select(with_app!(app, |app, index, control, shift| click(&app, index, control, shift)));
     mail.on_drag_started(with_app!(app, |app, index| {
+        app.mail.pending_click.set(None);
         if !app.mail.list.is_selected(index.max(0) as usize) {
             select(&app, index);
         }
@@ -158,10 +163,13 @@ pub fn wire(app: &Rc<App>, ui: &MainWindow) {
         move_messages(&app, dragged, &account, &folder);
     }));
     mail.on_row_clicked(with_app!(app, |app, index| {
-        if app.mail.list.selection_len() > 1 && app.mail.list.is_selected(index.max(0) as usize) {
+        // Only the release of a plain press on a picked row, which waited
+        // to tell a click from a drag (see `click`).
+        if app.mail.pending_click.take() == Some(index) {
             select(&app, index);
         }
     }));
+    mail.on_select_all(with_app!(app, |app| select_all(&app)));
     mail.on_bulk(with_app!(app, |app, action| bulk(&app, &action)));
     mail.on_clear_selection(with_app!(app, |app| {
         let selected = app.ui().map(|ui| ui.global::<Mail>().get_selected()).unwrap_or(-1);
@@ -703,6 +711,7 @@ pub fn search_results(app: &Rc<App>, token: u64, ids: Vec<(String, String)>) {
 
 /// A click on a row: opens it, or with Ctrl or Shift adds to the selection.
 fn click(app: &Rc<App>, index: i32, control: bool, shift: bool) {
+    app.mail.pending_click.set(None);
     if index < 0 {
         return;
     }
@@ -713,6 +722,7 @@ fn click(app: &Rc<App>, index: i32, control: bool, shift: bool) {
     } else if app.mail.list.selection_len() > 1 && app.mail.list.is_selected(index as usize) {
         // Maybe the start of dragging the selection; a plain click picks
         // the row alone on release (see row-clicked).
+        app.mail.pending_click.set(Some(index));
         return;
     } else {
         select(app, index);
@@ -726,6 +736,25 @@ fn click(app: &Rc<App>, index: i32, control: bool, shift: bool) {
     {
         select(app, position as i32);
     }
+}
+
+/// Picks every message in the list, or with all picked, leaves the open
+/// one alone.
+fn select_all(app: &Rc<App>) {
+    let len = app.mail.list.len();
+    if len == 0 {
+        return;
+    }
+    if app.mail.list.selection_len() >= len && len > 1 {
+        app.mail.list.clear();
+        let selected = app.ui().map(|ui| ui.global::<Mail>().get_selected()).unwrap_or(-1);
+        if selected >= 0 {
+            app.mail.list.select_one(selected as usize);
+        }
+    } else {
+        app.mail.list.select_all();
+    }
+    update_selection_count(app);
 }
 
 fn update_selection_count(app: &App) {

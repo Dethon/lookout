@@ -243,6 +243,8 @@ export component MessageList inherits Rectangle {
     callback archive-at(int);
     callback junk-at(int);
     callback move-at(int);
+    // Picks every message, or with all picked, none again.
+    callback select-all();
     callback scrolled-to-end();
     background: Theme.surface;
 
@@ -264,6 +266,26 @@ export component MessageList inherits Rectangle {
             padding-right: 8px;
             height: 36px;
             spacing: 6px;
+            if root.messages.length > 0: IconButton {
+                property <bool> all: root.selection-count > 1 && root.selection-count >= root.messages.length;
+                y: (parent.height - self.height) / 2;
+                tooltip: all ? "Select none" : "Select all (Ctrl+A)";
+                clicked => { root.select-all(); }
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    border-width: parent.all ? 0px : 1.5px;
+                    border-color: parent.hovered ? Theme.accent : Theme.text-muted;
+                    background: parent.all ? Theme.accent : Theme.surface;
+                    if parent.all: Icon {
+                        icon: Icons.check;
+                        color: Theme.on-accent;
+                        width: 14px;
+                        height: 14px;
+                    }
+                }
+            }
             Text {
                 text: root.title;
                 font-size: 16px;
@@ -327,7 +349,7 @@ export component MessageList inherits Rectangle {
                 Rectangle {
                 y: heading;
                 height: Theme.row-height;
-                property <bool> is-selected: index == root.selected || message.selected;
+                property <bool> is-selected: message.selected || (root.selection-count <= 1 && index == root.selected);
                 background: drag.dragging ? Theme.selected-strong : is-selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
                 // Unread bar.
                 Rectangle {
@@ -348,9 +370,13 @@ export component MessageList inherits Rectangle {
                     }
                     touch := TouchArea {
                         mouse-cursor: pointer;
+                        // The check box is drawn inside, so the press is told
+                        // apart here: in its column, a press picks the row as
+                        // Ctrl does.
+                        property <bool> on-check: checking && self.mouse-x >= 6px && self.mouse-x < 54px;
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                                root.select(index, event.modifiers.control, event.modifiers.shift);
+                                root.select(index, event.modifiers.control || on-check, event.modifiers.shift);
                             }
                         }
                         clicked => { root.row-clicked(index); }
@@ -376,19 +402,14 @@ export component MessageList inherits Rectangle {
                                 height: 20px;
                                 border-radius: 10px;
                                 border-width: checked ? 0px : 1.5px;
-                                border-color: check-touch.has-hover ? Theme.accent : Theme.text-muted;
-                                background: checked ? Theme.accent : check-touch.has-hover ? Theme.hover : Theme.surface;
+                                border-color: touch.on-check ? Theme.accent : Theme.text-muted;
+                                background: checked ? Theme.accent : touch.on-check ? Theme.hover : Theme.surface;
                                 if checked: Icon {
                                     icon: Icons.check;
                                     color: Theme.on-accent;
                                     width: 14px;
                                     height: 14px;
                                 }
-                            }
-                            check-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                // As a Ctrl+click.
-                                clicked => { root.select(index, true, false); }
                             }
                         }
                         // Inside, so the row keeps its hover over the quick actions.
@@ -784,14 +805,14 @@ export component ReadingPane inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             spacing: 4px;
-            ToolButton { icon: Icons.mail-open; label: "Mark read"; clicked => { root.bulk("read"); } }
-            ToolButton { icon: Icons.mail; label: "Mark unread"; clicked => { root.bulk("unread"); } }
-            ToolButton { icon: Icons.flag-outline; label: "Flag"; clicked => { root.bulk("flag"); } }
-            ToolButton { icon: Icons.archive; label: "Archive"; clicked => { root.bulk("archive"); } }
-            if root.junk-folder: ToolButton { icon: Icons.inbox; label: "Not spam"; clicked => { root.bulk("not-junk"); } }
-            if !root.junk-folder: ToolButton { icon: Icons.junk; label: "Spam"; clicked => { root.bulk("junk"); } }
-            ToolButton { icon: Icons.move; label: "Move"; clicked => { root.bulk("move"); } }
-            ToolButton { icon: Icons.delete; label: "Delete"; tint: Theme.danger; clicked => { root.bulk("delete"); } }
+            ToolButton { icon: Icons.mail-open; label: "Mark read"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Mark read" : ""; clicked => { root.bulk("read"); } }
+            ToolButton { icon: Icons.mail; label: "Mark unread"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Mark unread" : ""; clicked => { root.bulk("unread"); } }
+            ToolButton { icon: Icons.flag-outline; label: "Flag"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Flag" : ""; clicked => { root.bulk("flag"); } }
+            ToolButton { icon: Icons.archive; label: "Archive"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Archive" : ""; clicked => { root.bulk("archive"); } }
+            if root.junk-folder: ToolButton { icon: Icons.inbox; label: "Not spam"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Not spam" : ""; clicked => { root.bulk("not-junk"); } }
+            if !root.junk-folder: ToolButton { icon: Icons.junk; label: "Spam"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Spam" : ""; clicked => { root.bulk("junk"); } }
+            ToolButton { icon: Icons.move; label: "Move"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Move" : ""; clicked => { root.bulk("move"); } }
+            ToolButton { icon: Icons.delete; label: "Delete"; compact: root.tier < 3; tooltip: root.tier < 3 ? "Delete" : ""; tint: Theme.danger; clicked => { root.bulk("delete"); } }
         }
         HorizontalLayout {
             alignment: center;

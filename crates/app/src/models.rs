@@ -27,7 +27,7 @@ pub struct MessageList {
     /// The rows picked with Ctrl or Shift, besides the open one.
     selected: RefCell<HashSet<RowId>>,
     /// Where a Shift range starts.
-    anchor: Cell<Option<usize>>,
+    anchor: Cell<Option<RowId>>,
 }
 
 impl MessageList {
@@ -53,7 +53,6 @@ impl MessageList {
         *self.rows.borrow_mut() = rows;
         self.cache.borrow_mut().clear();
         self.now.set(chrono::Local::now());
-        self.anchor.set(None);
         self.notify.reset();
     }
 
@@ -62,7 +61,7 @@ impl MessageList {
         let Some(row) = self.rows.borrow().get(index).copied() else { return };
         let before: Vec<RowId> = self.selected.borrow_mut().drain().collect();
         self.selected.borrow_mut().insert(row);
-        self.anchor.set(Some(index));
+        self.anchor.set(Some(row));
         self.changed(before.into_iter().chain([row]));
     }
 
@@ -75,18 +74,23 @@ impl MessageList {
                 selected.insert(row);
             }
         }
-        self.anchor.set(Some(index));
+        self.anchor.set(Some(row));
         self.changed([row]);
     }
 
     /// Selects from the anchor to `index`, as Shift+click does.
     pub fn select_range(&self, index: usize) {
-        let anchor = self.anchor.get().unwrap_or(index);
+        let anchor = self.anchor.get().and_then(|row| self.rows.borrow().iter().position(|r| *r == row)).unwrap_or(index);
         let (from, to) = (anchor.min(index), anchor.max(index));
         let range: Vec<RowId> = self.rows.borrow().get(from..=to.min(self.len().saturating_sub(1))).unwrap_or_default().to_vec();
         let before: Vec<RowId> = self.selected.borrow_mut().drain().collect();
         self.selected.borrow_mut().extend(range.iter().copied());
         self.changed(before.into_iter().chain(range));
+    }
+
+    pub fn clear(&self) {
+        let before: Vec<RowId> = self.selected.borrow_mut().drain().collect();
+        self.changed(before);
     }
 
     pub fn select_all(&self) {

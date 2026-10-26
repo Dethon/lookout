@@ -277,8 +277,15 @@ pub async fn sync_messages(
             }
             Err(error) => return Err(error),
         };
+        // Only a page that changed something refreshes the list: an Inbox
+        // checked every few seconds would otherwise be redrawn each time,
+        // losing the pointer's place and the selection's anchor.
+        let changed_before = std::mem::take(&mut result.changed);
         apply_messages(store, &account, folder, page.value, initial, &mut result)?;
-        on_page();
+        if result.changed {
+            on_page();
+        }
+        result.changed |= changed_before;
         match (page.next_link, page.delta_link) {
             (Some(next), _) => {
                 lock(store).set_sync_link(&account, &key, Some(&next))?;

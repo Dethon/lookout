@@ -307,6 +307,47 @@ async fn throttling_is_waited_out() {
 }
 
 #[tokio::test]
+async fn throttled_parts_of_a_batch_are_sent_again() {
+    // Of each batch, the server takes the first request and turns the rest
+    // away; one it refuses outright.
+    let batches = Arc::new(Mutex::new(Vec::new()));
+    let seen = batches.clone();
+    let handler: Handler = Arc::new(move |_, _, body, _| {
+        let requests: serde_json::Value = serde_json::from_str(body).unwrap();
+        let urls: Vec<String> = requests["requests"].as_array().unwrap().iter().map(|r| r["url"].as_str().unwrap().to_owned()).collect();
+        seen.lock().unwrap().push(urls);
+        let responses: Vec<_> = requests["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, request)| match (index, request["url"].as_str().unwrap()) {
+                (_, "/me/messages/bad") => json!({ "id": request["id"], "status": 404, "body": { "error": { "message": "gone" } } }),
+                (0, _) => json!({ "id": request["id"], "status": 200, "body": {} }),
+                _ => json!({
+                    "id": request["id"], "status": 429, "headers": { "Retry-After": "2" },
+                    "body": { "error": { "message": "Application is over its MailboxConcurrency limit." } },
+                }),
+            })
+            .rev()
+            .collect();
+        (200, json!({ "responses": responses }).to_string())
+    });
+    let (base, _) = serve(handler).await;
+    tokio::time::pause();
+    let requests: Vec<_> = ["a", "b", "bad", "c"]
+        .iter()
+        .map(|id| json!({ "method": "PATCH", "url": format!("/me/messages/{id}"), "body": { "isRead": true } }))
+        .collect();
+    let error = mail::run_batch(&graph(&base), "/$batch", &requests).await.unwrap_err();
+    assert!(matches!(error, crate::Error::Graph { ref message, .. } if message == "1 of 4 not changed: gone"), "{error}");
+    let batches = batches.lock().unwrap();
+    let ids: Vec<Vec<&str>> =
+        batches.iter().map(|urls| urls.iter().map(|url| url.trim_start_matches("/me/messages/")).collect()).collect();
+    assert_eq!(ids, [vec!["a", "b", "bad", "c"], vec!["b", "c"], vec!["c"]]);
+}
+
+#[tokio::test]
 async fn errors_carry_graphs_message() {
     let handler: Handler =
         Arc::new(|_, _, _, _| (403, json!({ "error": { "code": "ErrorAccessDenied", "message": "Access is denied." } }).to_string()));

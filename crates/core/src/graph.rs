@@ -11,7 +11,7 @@ use crate::{Error, Result, Session};
 
 pub const BASE: &str = "https://graph.microsoft.com/v1.0";
 // Throttled or busy responses are retried this often before giving up.
-const RETRIES: u32 = 4;
+pub(crate) const RETRIES: u32 = 4;
 // Used when a throttled response doesn't say how long to wait.
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -50,6 +50,18 @@ struct ErrorBody {
 struct ErrorDetail {
     code: String,
     message: String,
+}
+
+/// Whether a response with `status` is worth trying again: throttled, or
+/// the service busy.
+pub(crate) fn retryable(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504)
+}
+
+/// How long to wait before retry `attempt`, counted from one: what the server asked
+/// for in seconds, or longer each time.
+pub(crate) fn backoff(retry_after: Option<u64>, attempt: u32) -> Duration {
+    retry_after.map(Duration::from_secs).unwrap_or(DEFAULT_BACKOFF * attempt).min(MAX_BACKOFF)
 }
 
 impl Graph {
@@ -126,23 +138,14 @@ impl Graph {
                 self.session.invalidate().await;
                 continue;
             }
-            let retryable = matches!(
-                status,
-                StatusCode::TOO_MANY_REQUESTS
-                    | StatusCode::SERVICE_UNAVAILABLE
-                    | StatusCode::GATEWAY_TIMEOUT
-                    | StatusCode::BAD_GATEWAY
-            );
-            if retryable && attempt < RETRIES {
+            if retryable(status.as_u16()) && attempt < RETRIES {
                 attempt += 1;
-                let wait = response
+                let retry_after = response
                     .headers()
                     .get(header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse().ok())
-                    .map(Duration::from_secs)
-                    .unwrap_or(DEFAULT_BACKOFF * attempt)
-                    .min(MAX_BACKOFF);
+                    .and_then(|value| value.parse().ok());
+                let wait = backoff(retry_after, attempt);
                 log::info!("{status} from {method} {path}; retrying in {wait:?}");
                 tokio::time::sleep(wait).await;
                 continue;

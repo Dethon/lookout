@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::graph::{Page, encode};
+use crate::graph::{self, Page, encode};
 use crate::model::{Address, Attachment, Flag, MessageDetail, MessageSummary, wire};
 use crate::{Graph, Result, Store, html};
 
@@ -235,9 +235,20 @@ struct BatchReply {
 
 #[derive(Deserialize)]
 struct BatchItem {
+    id: String,
     status: u16,
     #[serde(default)]
+    headers: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
     body: serde_json::Value,
+}
+
+impl BatchItem {
+    /// The seconds the server asked to wait before this is sent again.
+    fn retry_after(&self) -> Option<u64> {
+        let (_, value) = self.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))?;
+        value.as_u64().or_else(|| value.as_str()?.parse().ok())
+    }
 }
 
 /// Applies `change` to the messages `ids`: in the cache at once (`cached`
@@ -343,11 +354,13 @@ struct Override {
 }
 
 /// Sends `requests` to the batch endpoint at `path`, twenty at a time.
-async fn run_batch(graph: &Graph, path: &str, requests: &[serde_json::Value]) -> Result<()> {
+/// Graph throttles each request in a batch on its own: those it turned
+/// away are sent again once it says, the rest of the batch kept.
+pub(crate) async fn run_batch(graph: &Graph, path: &str, requests: &[serde_json::Value]) -> Result<()> {
     let mut failed = 0;
     let mut first_error = None;
     for chunk in requests.chunks(BATCH) {
-        let numbered: Vec<_> = chunk
+        let mut pending: Vec<_> = chunk
             .iter()
             .enumerate()
             .map(|(index, request)| {
@@ -357,12 +370,29 @@ async fn run_batch(graph: &Graph, path: &str, requests: &[serde_json::Value]) ->
                 request
             })
             .collect();
-        let reply: BatchReply = graph.post(path, &json!({ "requests": numbered })).await?;
-        for item in reply.responses.iter().filter(|item| item.status >= 300) {
-            failed += 1;
-            first_error.get_or_insert_with(|| {
-                item.body["error"]["message"].as_str().unwrap_or("refused").to_owned()
-            });
+        let mut attempt = 0;
+        while !pending.is_empty() {
+            let reply: BatchReply = graph.post(path, &json!({ "requests": pending })).await?;
+            let mut retry = Vec::new();
+            let mut retry_after = None;
+            for item in reply.responses.iter().filter(|item| item.status >= 300) {
+                if graph::retryable(item.status) && attempt < graph::RETRIES {
+                    retry.push(item.id.as_str());
+                    retry_after = retry_after.max(item.retry_after());
+                    continue;
+                }
+                failed += 1;
+                first_error.get_or_insert_with(|| {
+                    item.body["error"]["message"].as_str().unwrap_or("refused").to_owned()
+                });
+            }
+            pending.retain(|request| retry.contains(&request["id"].as_str().unwrap_or_default()));
+            if !pending.is_empty() {
+                attempt += 1;
+                let wait = graph::backoff(retry_after, attempt);
+                log::info!("{} of a batch to {path} throttled; retrying in {wait:?}", pending.len());
+                tokio::time::sleep(wait).await;
+            }
         }
     }
     match first_error {

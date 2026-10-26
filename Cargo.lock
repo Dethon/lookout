@@ -3383,6 +3383,7 @@ dependencies = [
  "rfd",
  "slint",
  "slint-build",
+ "stylo",
  "tokio",
  "tray-icon",
  "windows",

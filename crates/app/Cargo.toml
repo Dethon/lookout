@@ -15,6 +15,9 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = 
 blitz-traits = "=0.3.0-beta.4"
 anyrender = "=0.14.0"
 anyrender_vello_cpu = "=0.18.0"
+# Blitz's style engine, the version it uses: whether a box clips what
+# overflows it, for how wide a message is.
+style = { package = "stylo", version = "=0.22.0", default-features = false }
 # Shapes and colours to paint with, as anyrender takes them, and where
 # selected text lies in Blitz's text layout.
 peniko = "0.6"

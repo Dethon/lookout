@@ -50,7 +50,8 @@ signing in), against the hundreds the new Outlook takes.
   [Blitz](https://github.com/DioxusLabs/blitz) inside the reading pane:
   some 15-25 MB, against some 220 MB for WebView2. Only the part in view
   and a little around it is painted, so scrolling mostly moves what is
-  already drawn. Text is selected with the mouse (a double click takes a
+  already drawn; a message wider than the pane scrolls sideways too
+  (Shift+wheel). Text is selected with the mouse (a double click takes a
   word) and copied with Ctrl+C or a right click. Scripts never run; remote
   pictures, styles and fonts follow the message's setting. The *Original*
   switch turns it off for the simplified, theme-coloured view, drawn by

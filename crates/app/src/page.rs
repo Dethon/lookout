@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyrender::{ImageRenderer, PaintScene};
 use anyrender_vello_cpu::{ImageCacheConfig, VelloCpuImageRenderer};
-use blitz_dom::{DocumentConfig, NodeId, Point, StyleThreading, UserAgentStylesheet, local_name};
+use blitz_dom::{DocumentConfig, NodeData, NodeId, Point, StyleThreading, UserAgentStylesheet, local_name};
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request as NetRequest};
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -95,6 +95,8 @@ pub struct Page {
     /// its text. None while a drag hasn't reached any text.
     ends: Option<((NodeId, usize), (NodeId, usize))>,
     arrived: Arc<AtomicBool>,
+    /// How far right the boxes reach, once measured for this layout.
+    reach: std::cell::Cell<Option<f32>>,
 }
 
 /// A picture of part of the page, and where it goes, in logical pixels.
@@ -124,6 +126,7 @@ impl Page {
             painted: None,
             ends: None,
             arrived,
+            reach: std::cell::Cell::new(None),
         }
     }
 
@@ -133,6 +136,7 @@ impl Page {
         if viewport != self.viewport {
             self.viewport = viewport;
             self.painted = None;
+            self.reach.set(None);
             let scheme = if self.paper.dark { ColorScheme::Dark } else { ColorScheme::Light };
             self.doc.set_viewport(Viewport::new(viewport.0, viewport.1, scale, scheme));
         }
@@ -145,12 +149,22 @@ impl Page {
         self.doc.handle_messages();
         self.doc.resolve(0.0);
         self.painted = None;
+        self.reach.set(None);
     }
 
     /// The size of everything on the page, in logical pixels.
     pub fn size(&self) -> (f32, f32) {
-        let layout = self.doc.root_element().final_layout();
-        let width = layout.size.width + layout.scroll_width();
+        let root = self.doc.root_element();
+        let layout = root.final_layout();
+        // Taffy doesn't carry what overflows a table cell up to the root,
+        // as with a fixed-width table inside one filling the view: the
+        // boxes themselves say how far the page reaches.
+        let reach = self.reach.get().unwrap_or_else(|| {
+            let reach = right_edge(&self.doc, root.id, 0.0);
+            self.reach.set(Some(reach));
+            reach
+        });
+        let width = (layout.size.width + layout.scroll_width()).max(reach);
         let height = layout.size.height + layout.scroll_height();
         (width, height.min(MAX_HEIGHT))
     }
@@ -309,6 +323,28 @@ impl Page {
 }
 
 /// Where the selected text is, in physical pixels on the page.
+/// How far right the boxes of `id` and those within reach, `x` being where
+/// it starts, leaving out what boxes that clip their content hide.
+fn right_edge(doc: &HtmlDocument, id: NodeId, x: f32) -> f32 {
+    let Some(node) = doc.get_node(id) else { return x };
+    // Text has no box of its own; asking for one panics.
+    if !matches!(node.data, NodeData::Element(_) | NodeData::AnonymousBlock(_)) {
+        return x;
+    }
+    let layout = node.final_layout();
+    let left = x + layout.location.x;
+    let mut right = left + layout.size.width;
+    let clips = node
+        .primary_styles()
+        .is_some_and(|styles| styles.clone_overflow_x() != style::values::computed::Overflow::Visible);
+    if !clips && let Some(children) = node.layout_children.borrow().as_ref() {
+        for child in children.iter() {
+            right = right.max(right_edge(doc, *child, left));
+        }
+    }
+    right
+}
+
 fn selection_rects(doc: &HtmlDocument, scale: f64) -> Vec<Rect> {
     let mut rects = Vec::new();
     for (id, start, end) in doc.get_text_selection_ranges() {
@@ -412,6 +448,20 @@ mod tests {
         // Half the view's height beyond it, above and below.
         assert_eq!((painted.x, painted.y, painted.width, painted.height), (0.0, 350.0, 400.0, 600.0));
         assert_eq!((painted.picture.size().width, painted.picture.size().height), (400, 600));
+    }
+
+    #[test]
+    fn content_wider_than_the_view_widens_the_page() {
+        let wide = page("<table width=\"1000\"><tr><td>wide</td></tr></table><div style=\"width:700px\">x</div>");
+        assert!(wide.size().0 >= 1000.0, "{:?}", wide.size());
+        // A fixed table inside one that fills the view, as mail is laid out.
+        let nested = page("<table width=\"100%\"><tr><td><table width=\"800\"><tr><td>wide</td></tr></table></td></tr></table>");
+        assert!(nested.size().0 >= 800.0, "{:?}", nested.size());
+        let fits = page("<p>narrow <span>words</span></p>");
+        assert_eq!(fits.size().0, 400.0);
+        // What a box clips is out of reach.
+        let clipped = page("<div style=\"overflow:hidden;width:300px\"><div style=\"width:900px\">x</div></div>");
+        assert_eq!(clipped.size().0, 400.0);
     }
 
     #[test]

@@ -33,6 +33,9 @@ td[align=center i] > table, th[align=center i] > table, center > table, div[alig
     margin-left: auto; margin-right: auto;
 }
 td[align=right i] > table, div[align=right i] > table { margin-left: auto; }
+table[cellspacing='0'] { border-spacing: 0; }
+table[cellpadding='0'] > tbody > tr > td, table[cellpadding='0'] > tbody > tr > th,
+table[cellpadding='0'] > tr > td, table[cellpadding='0'] > tr > th { padding: 0; }
 ";
 
 // Past this, the rest of a very long message isn't laid out at all.

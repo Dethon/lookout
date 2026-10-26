@@ -7,8 +7,9 @@
 //!
 //! Steps: `size:W,H`, `scale:F`, `wait:MS` (lets the engine work), `shot:NAME`,
 //! `page:mail|calendar|people`, `folder:NAME` (first folder with that name), `fav:NAME`, `collapse:NAME`,
-//! `select:N` (message), `ctrl-select:N`, `shift-select:N`, `person:N`, `key:NAME[+ctrl][+shift]`, `click:X,Y`, `drag:X1,Y1,X2,Y2`,
-//! `search:TEXT`, `hover:X,Y`, `wheel:X,Y,DY` (or `X,Y,DX,DY`), `mode:N` (calendar view), `next`, `previous`, `dark`.
+//! `select:N` (message), `ctrl-select:N`, `shift-select:N`, `person:N`, `key:NAME[+ctrl][+shift]`, `click:X,Y`, `rclick:X,Y`, `drag:X1,Y1,X2,Y2`,
+//! `search:TEXT`, `new-folder:[PARENT/]NAME`, `delete-folder:NAME`, `tab:focused|other`,
+//! `focus:N,focused|other[,always]`, `hover:X,Y`, `wheel:X,Y,DY` (or `X,Y,DX,DY`), `mode:N` (calendar view), `next`, `previous`, `dark`.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -66,9 +67,8 @@ fn pump(queue: &Queue, time: Duration) {
     }
 }
 
-fn click(ui: &MainWindow, x: f32, y: f32) {
+fn click(ui: &MainWindow, x: f32, y: f32, button: PointerEventButton) {
     let position = LogicalPosition::new(x, y);
-    let button = PointerEventButton::Left;
     for event in [
         WindowEvent::PointerMoved { position },
         WindowEvent::PointerPressed { position, button },
@@ -111,7 +111,7 @@ fn windowed(steps: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                             let delta_y = numbers.get(2).copied().unwrap_or(-200.0);
                             window.dispatch_event(WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y });
                         } else if name == "click" {
-                            click(&ui, x, y);
+                            click(&ui, x, y, PointerEventButton::Left);
                         }
                     }
                 }
@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slint::platform::set_platform(Box::new(Headless { window: window.clone(), queue: queue.clone() }))?;
     let ui = MainWindow::new()?;
     window.set_size(PhysicalSize::new(1400, 900));
-    let _app = App::start(&ui)?;
+    let app = App::start(&ui)?;
     ui.show()?;
     pump(&queue, Duration::from_millis(500));
 
@@ -184,6 +184,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     mail.invoke_toggle_expanded(found.account, found.id);
                 }
+            }
+            "new-folder" | "delete-folder" => {
+                // As the folder pane's menu and the dialog after it do.
+                let (parent, folder) = match value.rsplit_once('/') {
+                    Some((parent, folder)) => (Some(parent), folder),
+                    None => (None, value),
+                };
+                let lookup = if name == "new-folder" { parent } else { Some(folder) };
+                let account = app.store.accounts()?.first().ok_or("no account")?.id.clone();
+                let id = match lookup {
+                    Some(wanted) => {
+                        let folders = app.store.folders(&account)?;
+                        folders.into_iter().find(|f| f.name.eq_ignore_ascii_case(wanted)).ok_or("no such folder")?.id
+                    }
+                    None => String::new(),
+                };
+                let mail = ui.global::<Mail>();
+                if name == "new-folder" {
+                    mail.invoke_new_folder(account.into(), id.into());
+                    mail.invoke_folder_dialog_accepted(folder.into());
+                } else {
+                    mail.invoke_delete_folder(account.into(), id.into());
+                    mail.invoke_folder_dialog_accepted("".into());
+                }
+            }
+            "tab" => ui.global::<Mail>().invoke_show_focused(value != "other"),
+            "focus" => {
+                // `N,focused|other[,always]`: as the message's menu does.
+                let parts: Vec<&str> = value.split(',').collect();
+                let index = parts.first().ok_or("focus:N,focused|other[,always]")?.parse()?;
+                let focused = parts.get(1) != Some(&"other");
+                ui.global::<Mail>().invoke_focus_at(index, focused, parts.get(2) == Some(&"always"));
             }
             "select" => ui.global::<Mail>().invoke_select(value.parse()?, false, false),
             "ctrl-select" => ui.global::<Mail>().invoke_select(value.parse()?, true, false),
@@ -232,9 +264,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 ui.window().dispatch_event(WindowEvent::PointerReleased { position: at(x2, y2), button });
             }
-            "click" => {
+            "click" | "rclick" => {
                 let (x, y) = value.split_once(',').ok_or("click:X,Y")?;
-                click(&ui, x.parse()?, y.parse()?);
+                let button = if name == "rclick" { PointerEventButton::Right } else { PointerEventButton::Left };
+                click(&ui, x.parse()?, y.parse()?, button);
             }
             other => return Err(format!("unknown step {other}").into()),
         }

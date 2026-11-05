@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyrender::{ImageRenderer, PaintScene};
 use anyrender_vello_cpu::{ImageCacheConfig, VelloCpuImageRenderer};
-use blitz_dom::{DocumentConfig, NodeData, NodeId, Point, StyleThreading, UserAgentStylesheet, local_name};
+use blitz_dom::{Attribute, DocumentConfig, LocalName, NodeData, NodeId, Point, QualName, StyleThreading, UserAgentStylesheet, local_name, ns};
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request as NetRequest};
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -23,6 +23,7 @@ use parley::{Affinity, Cursor, Selection};
 use peniko::kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 
 use crate::engine::{Engine, Request};
 
@@ -140,16 +141,25 @@ impl Page {
             let scheme = if self.paper.dark { ColorScheme::Dark } else { ColorScheme::Light };
             self.doc.set_viewport(Viewport::new(viewport.0, viewport.1, scale, scheme));
         }
-        self.doc.resolve(0.0);
+        self.resolve();
     }
 
     /// Takes in pictures, style sheets and fonts that have arrived.
     pub fn load(&mut self) {
         self.arrived.store(false, Ordering::Release);
         self.doc.handle_messages();
-        self.doc.resolve(0.0);
+        self.resolve();
         self.painted = None;
         self.reach.set(None);
+    }
+
+    /// Styles and lays the page out, first giving what sits loose in a
+    /// table the cell a browser would.
+    fn resolve(&mut self) {
+        self.doc.resolve(0.0);
+        if wrap_loose_table_content(&mut self.doc) {
+            self.doc.resolve(0.0);
+        }
     }
 
     /// The size of everything on the page, in logical pixels.
@@ -322,7 +332,6 @@ impl Page {
     }
 }
 
-/// Where the selected text is, in physical pixels on the page.
 /// How far right the boxes of `id` and those within reach, `x` being where
 /// it starts, leaving out what boxes that clip their content hide.
 fn right_edge(doc: &HtmlDocument, id: NodeId, x: f32) -> f32 {
@@ -345,6 +354,84 @@ fn right_edge(doc: &HtmlDocument, id: NodeId, x: f32) -> f32 {
     right
 }
 
+/// Puts what sits directly in a table, row group or row without being a
+/// part of one, such as a floated block, into a row and cell of its own, as
+/// browsers do with anonymous boxes. Blitz doesn't yet, and lays none of it
+/// out: mail built of `display: table` blocks came out blank. True if the
+/// page changed.
+fn wrap_loose_table_content(doc: &mut HtmlDocument) -> bool {
+    // Each run of loose children, and whether it goes in a row (directly in
+    // a table or row group) or only a cell (in a row).
+    let mut runs: Vec<(Vec<NodeId>, bool)> = Vec::new();
+    let mut stack = vec![doc.root_element().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else { continue };
+        stack.extend(node.children.iter().copied().filter(|&child| doc.get_node(child).is_some_and(|c| c.is_element())));
+        let in_row = match node.primary_styles().map(|styles| styles.clone_display()).map(|display| display.inside()) {
+            Some(DisplayInside::Table | DisplayInside::TableRowGroup | DisplayInside::TableHeaderGroup | DisplayInside::TableFooterGroup) => false,
+            Some(DisplayInside::TableRow) => true,
+            _ => continue,
+        };
+        let mut run = Vec::new();
+        let mut shown = false;
+        for &child in &node.children {
+            let Some(child_node) = doc.get_node(child) else { continue };
+            let display = child_node.primary_styles().map(|styles| styles.clone_display());
+            // Blitz looks for rows inside `display: contents` itself.
+            if display.is_some_and(|display| {
+                matches!(display.outside(), DisplayOutside::InternalTable | DisplayOutside::TableCaption)
+                    || display.inside() == DisplayInside::Contents
+            }) {
+                if shown {
+                    runs.push((std::mem::take(&mut run), in_row));
+                }
+                run.clear();
+                shown = false;
+                continue;
+            }
+            // Hidden and absolutely placed boxes and blank text go with
+            // their neighbours, but make no cell of their own.
+            shown |= match &child_node.data {
+                NodeData::Text(text) => !text.content.chars().all(|c| c.is_ascii_whitespace()),
+                NodeData::Element(_) => {
+                    display.is_some_and(|display| display.outside() != DisplayOutside::None)
+                        && !child_node.primary_styles().is_some_and(|styles| styles.clone_position().is_absolutely_positioned())
+                }
+                _ => false,
+            };
+            run.push(child);
+        }
+        if shown {
+            runs.push((run, in_row));
+        }
+    }
+    if runs.is_empty() {
+        return false;
+    }
+    let element = |mutator: &mut blitz_dom::DocumentMutator, name: &str, display: &str| {
+        let style = Attribute { name: QualName::new(None, ns!(), local_name!("style")), value: format!("display: {display}") };
+        mutator.create_element(QualName::new(None, ns!(html), LocalName::from(name)), vec![style])
+    };
+    let mut mutator = doc.mutate();
+    for (run, in_row) in runs {
+        let cell = element(&mut mutator, "lookout-cell", "table-cell");
+        let wrapper = if in_row {
+            cell
+        } else {
+            let row = element(&mut mutator, "lookout-row", "table-row");
+            mutator.append_children(row, &[cell]);
+            row
+        };
+        mutator.insert_nodes_before(run[0], &[wrapper]);
+        for &child in &run {
+            mutator.remove_node(child);
+        }
+        mutator.append_children(cell, &run);
+    }
+    true
+}
+
+/// Where the selected text is, in physical pixels on the page.
 fn selection_rects(doc: &HtmlDocument, scale: f64) -> Vec<Rect> {
     let mut rects = Vec::new();
     for (id, start, end) in doc.get_text_selection_ranges() {
@@ -462,6 +549,21 @@ mod tests {
         // What a box clips is out of reach.
         let clipped = page("<div style=\"overflow:hidden;width:300px\"><div style=\"width:900px\">x</div></div>");
         assert_eq!(clipped.size().0, 400.0);
+    }
+
+    #[test]
+    fn what_sits_loose_in_a_table_is_laid_out() {
+        let height = |html: &str| page(&format!("<body style=\"margin:0\">{html}</body>")).size().1;
+        // As PcComponentes lays its mail out: a floated column in a table.
+        assert!(height("<div style=\"display:table\"><div style=\"float:left;display:table-cell;height:200px\"></div></div>") >= 200.0);
+        assert!(height("<div style=\"display:table\"><div style=\"height:200px\"></div></div>") >= 200.0);
+        assert!(height("<div style=\"display:table\"><div style=\"display:table-row\"><div style=\"height:200px\"></div></div></div>") >= 200.0);
+        // Beside real rows, in a row of its own.
+        let mixed = "<div style=\"display:table\"><div style=\"display:table-row\"><div style=\"display:table-cell;height:100px\"></div></div><div style=\"height:200px\"></div></div>";
+        assert!(height(mixed) >= 300.0, "{}", height(mixed));
+        // Tables as written are left alone.
+        let mut table = page("<table><tr><td>a</td><td>b</td></tr></table>");
+        assert!(!wrap_loose_table_content(&mut table.doc));
     }
 
     #[test]
